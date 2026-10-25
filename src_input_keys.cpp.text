@@ -1,0 +1,81 @@
+#include "keys.h"
+
+#include "../utilities/platform.h"
+
+#include <algorithm>
+#include <cctype>
+#include <utility>
+
+namespace rms::keys {
+namespace {
+
+using Table = std::vector<std::pair<std::string, uint16_t>>;
+
+const Table& table() {
+    static const Table t = [] {
+        Table out;
+        for (char c = 'A'; c <= 'Z'; ++c) out.emplace_back(std::string(1, c), static_cast<uint16_t>(c));
+        for (char c = '0'; c <= '9'; ++c) out.emplace_back(std::string(1, c), static_cast<uint16_t>(c));
+        for (int i = 1; i <= 24; ++i) out.emplace_back("F" + std::to_string(i), static_cast<uint16_t>(VK_F1 + i - 1));
+        for (int i = 0; i <= 9; ++i) out.emplace_back("Numpad" + std::to_string(i), static_cast<uint16_t>(VK_NUMPAD0 + i));
+        const std::pair<const char*, uint16_t> named[] = {
+            {"Space", VK_SPACE}, {"Enter", VK_RETURN}, {"Tab", VK_TAB}, {"Escape", VK_ESCAPE},
+            {"Backspace", VK_BACK}, {"Shift", VK_SHIFT}, {"LShift", VK_LSHIFT}, {"RShift", VK_RSHIFT},
+            {"Ctrl", VK_CONTROL}, {"LCtrl", VK_LCONTROL}, {"RCtrl", VK_RCONTROL},
+            {"Alt", VK_MENU}, {"LAlt", VK_LMENU}, {"RAlt", VK_RMENU},
+            {"Up", VK_UP}, {"Down", VK_DOWN}, {"Left", VK_LEFT}, {"Right", VK_RIGHT},
+            {"Insert", VK_INSERT}, {"Delete", VK_DELETE}, {"Home", VK_HOME}, {"End", VK_END},
+            {"PageUp", VK_PRIOR}, {"PageDown", VK_NEXT}, {"CapsLock", VK_CAPITAL},
+            {"NumpadAdd", VK_ADD}, {"NumpadSubtract", VK_SUBTRACT}, {"NumpadMultiply", VK_MULTIPLY},
+            {"NumpadDivide", VK_DIVIDE}, {"NumpadDecimal", VK_DECIMAL},
+            {"Pause", VK_PAUSE}, {"ScrollLock", VK_SCROLL},
+            {"Minus", VK_OEM_MINUS}, {"Plus", VK_OEM_PLUS}, {"Comma", VK_OEM_COMMA}, {"Period", VK_OEM_PERIOD},
+        };
+        for (const auto& n : named) out.emplace_back(n.first, n.second);
+        return out;
+    }();
+    return t;
+}
+
+std::string upper(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return s;
+}
+
+} // namespace
+
+uint16_t vkFromName(const std::string& name) {
+    const std::string u = upper(name);
+    for (const auto& e : table())
+        if (upper(e.first) == u) return e.second;
+    return 0;
+}
+
+std::string nameFromVk(uint16_t vk) {
+    for (const auto& e : table())
+        if (e.second == vk) return e.first;
+    return {};
+}
+
+bool isValidHotkeyVk(uint16_t vk) {
+    switch (vk) {
+    case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:
+    case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+    case VK_MENU: case VK_LMENU: case VK_RMENU:
+    case VK_LWIN: case VK_RWIN:
+    case VK_LBUTTON: case VK_RBUTTON: case VK_MBUTTON: case VK_XBUTTON1: case VK_XBUTTON2:
+        return false;
+    default:
+        return !nameFromVk(vk).empty();
+    }
+}
+
+std::vector<std::string> allKeyNames() {
+    std::vector<std::string> out;
+    out.reserve(table().size());
+    for (const auto& e : table()) out.push_back(e.first);
+    return out;
+}
+
+} // namespace rms::keys

@@ -1,0 +1,85 @@
+#pragma once
+// Glue layer: owns configuration, macro definitions, the engine and the hotkeys.
+// Knows nothing about drawing; the UI drives it and listens to posted messages.
+
+#include "../config/config_store.h"
+#include "../input/input_controller.h"
+#include "../macro_engine/macro_engine.h"
+#include "../macro_loader/macro_loader.h"
+
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace rms::app {
+
+// Posted to the UI window from the engine worker thread.
+// wParam = 0, lParam = new engine::EngineEvent* (receiver takes ownership).
+constexpr UINT WM_RMS_ENGINE_EVENT = WM_APP + 1;
+
+constexpr int kHotkeyIdBase = 0xB000;
+
+struct MonitorInfoSnapshot {
+    int width = 1280;
+    int height = 960;
+    bool fromRoblox = false;
+};
+
+class Application {
+public:
+    Application();
+    ~Application();
+    Application(const Application&) = delete;
+    Application& operator=(const Application&) = delete;
+
+    // `error` is filled only for fatal problems (engine thread / event creation).
+    bool initialize(HWND window, std::string& error);
+    void shutdown();
+
+    // Re-reads <exe>/macros, reconciles settings, re-registers hotkeys. Never throws.
+    void reloadMacros();
+
+    const std::vector<std::shared_ptr<const engine::MacroDefinition>>& macros() const { return load_.macros; }
+    const std::vector<loader::LoadError>& loadErrors() const { return load_.errors; }
+
+    config::AppSettings& settings() { return settings_; }
+    const config::AppSettings& settings() const { return settings_; }
+    config::MacroSettings& settingsFor(const std::string& macroId);
+
+    // Writes settings.json. Returns false and fills `error` on failure.
+    bool saveSettings(std::string& error);
+
+    void registerHotkeys();   // (re)binds every assigned hotkey
+    void unregisterHotkeys(); // used while the hotkey picker is capturing
+
+    // Returns the macro index for a WM_HOTKEY id, or -1.
+    int macroIndexForHotkeyId(int id) const;
+
+    // Runs macro `index` if globally armed, enabled and Roblox is focused.
+    engine::SubmitResult trigger(size_t index);
+
+    void setGlobalEnabled(bool enabled); // DISABLE ALL / re-enable
+    bool globalEnabled() const { return settings_.globalEnabled; }
+
+    engine::MacroEngine& engine() { return engine_; }
+
+    // Monitor currently relevant for calibration (Roblox's monitor when available).
+    MonitorInfoSnapshot currentMonitor();
+
+    const std::string& startupWarning() const { return startupWarning_; }
+
+private:
+    HWND window_ = nullptr;
+    config::ConfigStore store_;
+    config::AppSettings settings_;
+    loader::LoadResult load_;
+    input::InputController input_;
+    engine::MacroEngine engine_;
+    input::RobloxFocusChecker focus_;
+    std::vector<int> registeredHotkeyIds_;
+    std::string startupWarning_;
+    bool initialized_ = false;
+};
+
+} // namespace rms::app
+</parameter>

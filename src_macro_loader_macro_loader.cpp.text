@@ -1,0 +1,357 @@
+#include "macro_loader.h"
+
+#include "../input/keys.h"
+#include "../utilities/json.h"
+#include "../utilities/platform.h"
+
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <set>
+#include <sstream>
+
+namespace rms::loader {
+namespace {
+
+using json::Value;
+using engine::Action;
+using engine::ActionType;
+
+constexpr uint64_t kSaturate = 1000000000000ULL;
+
+uint64_t satAdd(uint64_t a, uint64_t b) { return (a > kSaturate - std::min(b, kSaturate)) ? kSaturate : a + b; }
+uint64_t satMul(uint64_t a, uint64_t b) {
+    if (a == 0 || b == 0) return 0;
+    if (a > kSaturate / b) return kSaturate;
+    return a * b;
+}
+
+bool validIdentifier(const std::string& s, size_t maxLen) {
+    if (s.empty() || s.size() > maxLen) return false;
+    for (char c : s)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+    return true;
+}
+
+bool readString(const Value& o, const char* key, std::string& out, bool required, size_t maxLen, std::string& err) {
+    const Value* v = o.find(key);
+    if (!v) {
+        if (required) { err = std::string("Falta el campo '") + key + "'"; return false; }
+        return true;
+    }
+    if (!v->isString()) { err = std::string("'") + key + "' debe ser una cadena"; return false; }
+    if (v->string.size() > maxLen) { err = std::string("'") + key + "' es demasiado largo"; return false; }
+    out = v->string;
+    return true;
+}
+
+bool readInt(const Value& o, const char* key, int64_t lo, int64_t hi, int64_t& out,
+             bool required, int64_t def, std::string& err) {
+    const Value* v = o.find(key);
+    if (!v) {
+        if (required) { err = std::string("Falta el campo '") + key + "'"; return false; }
+        out = def;
+        return true;
+    }
+    if (!v->isNumber() || std::floor(v->number) != v->number) {
+        err = std::string("'") + key + "' debe ser un entero";
+        return false;
+    }
+    if (v->number < static_cast<double>(lo) || v->number > static_cast<double>(hi)) {
+        err = std::string("'") + key + "' fuera de rango [" + std::to_string(lo) + ", " + std::to_string(hi) + "]";
+        return false;
+    }
+    out = static_cast<int64_t>(v->number);
+    return true;
+}
+
+bool readBool(const Value& o, const char* key, bool& out, bool def, std::string& err) {
+    const Value* v = o.find(key);
+    if (!v) { out = def; return true; }
+    if (!v->isBool()) { err = std::string("'") + key + "' debe ser true/false"; return false; }
+    out = v->boolean;
+    return true;
+}
+
+bool parseColor(const std::string& s, uint32_t& rgb) {
+    if (s.size() != 7 || s[0] != '#') return false;
+    uint32_t v = 0;
+    for (size_t i = 1; i < 7; ++i) {
+        char c = s[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') v |= static_cast<uint32_t>(c - '0');
+        else if (c >= 'a' && c <= 'f') v |= static_cast<uint32_t>(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v |= static_cast<uint32_t>(c - 'A' + 10);
+        else return false;
+    }
+    rgb = v;
+    return true;
+}
+
+bool parseButton(const std::string& s, input::MouseButton& b) {
+    if (s == "left") { b = input::MouseButton::Left; return true; }
+    if (s == "right") { b = input::MouseButton::Right; return true; }
+    if (s == "middle") { b = input::MouseButton::Middle; return true; }
+    return false;
+}
+
+struct ParseCtx {
+    const engine::MacroDefinition* def = nullptr;
+    std::string err;
+};
+
+bool parseActionList(const Value& arr, int depth, std::vector<Action>& out, ParseCtx& ctx, const std::string& path);
+
+bool parseAction(const Value& v, int depth, Action& a, ParseCtx& ctx, const std::string& path) {
+    if (!v.isObject()) { ctx.err = path + ": la acción debe ser un objeto"; return false; }
+    std::string type;
+    std::string e;
+    if (!readString(v, "type", type, true, 32, e)) { ctx.err = path + ": " + e; return false; }
+
+    auto failField = [&](const std::string& m) { ctx.err = path + " (" + type + "): " + m; return false; };
+
+    if (type == "keyDown" || type == "keyUp") {
+        a.type = (type == "keyDown") ? ActionType::KeyDown : ActionType::KeyUp;
+        std::string key;
+        if (!readString(v, "key", key, true, 32, e)) return failField(e);
+        a.vk = keys::vkFromName(key);
+        if (a.vk == 0) return failField("tecla desconocida '" + key + "'");
+        return true;
+    }
+    if (type == "mouseDown" || type == "mouseUp") {
+        a.type = (type == "mouseDown") ? ActionType::MouseDown : ActionType::MouseUp;
+        std::string btn;
+        if (!readString(v, "button", btn, true, 16, e)) return failField(e);
+        if (!parseButton(btn, a.button)) return failField("botón no válido '" + btn + "' (left/right/middle)");
+        return true;
+    }
+    if (type == "move") {
+        a.type = ActionType::Move;
+        int64_t dx = 0, dy = 0;
+        if (!readInt(v, "dx", -kMaxBaseMove, kMaxBaseMove, dx, false, 0, e)) return failField(e);
+        if (!readInt(v, "dy", -kMaxBaseMove, kMaxBaseMove, dy, false, 0, e)) return failField(e);
+        if (!v.find("dx") && !v.find("dy")) return failField("se requiere 'dx' o 'dy'");
+        a.dx = static_cast<int>(dx);
+        a.dy = static_cast<int>(dy);
+        return true;
+    }
+    if (type == "wait") {
+        a.type = ActionType::Wait;
+        int64_t ms = 0;
+        if (!readInt(v, "ms", 0, kMaxWaitMs, ms, true, 0, e)) return failField(e);
+        a.ms = static_cast<uint32_t>(ms);
+        return true;
+    }
+    if (type == "waitRandom") {
+        a.type = ActionType::WaitRandom;
+        int64_t mn = 0, mx = 0;
+        if (!readInt(v, "min", 0, kMaxWaitMs, mn, true, 0, e)) return failField(e);
+        if (!readInt(v, "max", 0, kMaxWaitMs, mx, true, 0, e)) return failField(e);
+        if (mn > mx) return failField("'min' no puede ser mayor que 'max'");
+        a.minMs = static_cast<uint32_t>(mn);
+        a.maxMs = static_cast<uint32_t>(mx);
+        return true;
+    }
+    if (type == "repeat") {
+        a.type = ActionType::Repeat;
+        int64_t count = 0;
+        if (!readInt(v, "count", 1, kMaxRepeat, count, true, 0, e)) return failField(e);
+        a.count = static_cast<uint32_t>(count);
+        const Value* children = v.find("actions");
+        if (!children) return failField("falta 'actions'");
+        return parseActionList(*children, depth + 1, a.children, ctx, path + ".actions");
+    }
+    if (type == "if") {
+        a.type = ActionType::If;
+        if (!readString(v, "option", a.option, true, 48, e)) return failField(e);
+        if (!ctx.def->findOption(a.option)) return failField("opción no declarada '" + a.option + "'");
+        if (!readBool(v, "not", a.negate, false, e)) return failField(e);
+        const Value* children = v.find("actions");
+        if (!children) return failField("falta 'actions'");
+        return parseActionList(*children, depth + 1, a.children, ctx, path + ".actions");
+    }
+    ctx.err = path + ": tipo de acción no admitido '" + type + "'";
+    return false;
+}
+
+bool parseActionList(const Value& arr, int depth, std::vector<Action>& out, ParseCtx& ctx, const std::string& path) {
+    if (depth > kMaxNesting) { ctx.err = path + ": anidamiento máximo (" + std::to_string(kMaxNesting) + ") superado"; return false; }
+    if (!arr.isArray()) { ctx.err = path + ": debe ser un array"; return false; }
+    if (arr.array.empty()) { ctx.err = path + ": la lista de acciones está vacía"; return false; }
+    if (arr.array.size() > kMaxActionsPerList) { ctx.err = path + ": demasiadas acciones"; return false; }
+    out.clear();
+    out.reserve(arr.array.size());
+    for (size_t i = 0; i < arr.array.size(); ++i) {
+        Action a;
+        if (!parseAction(arr.array[i], depth, a, ctx, path + "[" + std::to_string(i) + "]")) return false;
+        out.push_back(std::move(a));
+    }
+    return true;
+}
+
+void accumulate(const std::vector<Action>& acts, uint64_t& count, uint64_t& ms) {
+    for (const Action& a : acts) {
+        count = satAdd(count, 1);
+        switch (a.type) {
+        case ActionType::Repeat: {
+            uint64_t c = 0, m = 0;
+            accumulate(a.children, c, m);
+            count = satAdd(count, satMul(c, a.count));
+            ms = satAdd(ms, satMul(m, a.count));
+            break;
+        }
+        case ActionType::If:
+            accumulate(a.children, count, ms); // worst case: branch taken
+            break;
+        case ActionType::Wait: ms = satAdd(ms, a.ms); break;
+        case ActionType::WaitRandom: ms = satAdd(ms, a.maxMs); break;
+        default: break;
+        }
+    }
+}
+
+bool readFile(const std::filesystem::path& p, std::string& out, std::string& err) {
+    std::error_code ec;
+    auto size = std::filesystem::file_size(p, ec);
+    if (ec) { err = "No se puede leer el tamaño del archivo"; return false; }
+    if (size > kMaxFileBytes) { err = "Archivo demasiado grande (máx. 256 KB)"; return false; }
+    std::ifstream f(p, std::ios::binary);
+    if (!f) { err = "No se puede abrir el archivo"; return false; }
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    if (out.size() >= 3 && static_cast<unsigned char>(out[0]) == 0xEF &&
+        static_cast<unsigned char>(out[1]) == 0xBB && static_cast<unsigned char>(out[2]) == 0xBF)
+        out.erase(0, 3);
+    return true;
+}
+
+} // namespace
+
+bool parseMacroDefinition(const std::string& text, engine::MacroDefinition& def, std::string& error) {
+    Value root;
+    std::string perr;
+    if (!json::parse(text, root, perr)) { error = "JSON no válido: " + perr; return false; }
+    if (!root.isObject()) { error = "La raíz debe ser un objeto"; return false; }
+
+    int64_t schema = 0;
+    if (!readInt(root, "schema", 1, 1, schema, true, 0, error)) return false;
+
+    if (!readString(root, "id", def.id, true, 48, error)) return false;
+    if (!validIdentifier(def.id, 48)) { error = "'id' solo admite a-z, 0-9 y '_' (máx. 48)"; return false; }
+
+    int64_t order = 1000;
+    if (!readInt(root, "order", -100000, 100000, order, false, 1000, error)) return false;
+    def.order = static_cast<int>(order);
+
+    if (!readString(root, "name", def.name, true, 64, error)) return false;
+    if (def.name.empty()) { error = "'name' no puede estar vacío"; return false; }
+    if (!readString(root, "description", def.description, false, 512, error)) return false;
+
+    std::string accent;
+    if (!readString(root, "accent", accent, true, 16, error)) return false;
+    if (!parseColor(accent, def.accentRgb)) { error = "'accent' debe tener formato #RRGGBB"; return false; }
+
+    std::string hotkey;
+    if (!readString(root, "defaultHotkey", hotkey, false, 32, error)) return false;
+    if (!hotkey.empty()) {
+        def.defaultHotkeyVk = keys::vkFromName(hotkey);
+        if (!keys::isValidHotkeyVk(def.defaultHotkeyVk)) { error = "'defaultHotkey' no admitida: " + hotkey; return false; }
+    }
+    if (!readBool(root, "defaultEnabled", def.defaultEnabled, true, error)) return false;
+
+    def.options.clear();
+    if (const Value* opts = root.find("options")) {
+        if (!opts->isArray()) { error = "'options' debe ser un array"; return false; }
+        if (opts->array.size() > 16) { error = "Demasiadas opciones (máx. 16)"; return false; }
+        std::set<std::string> seen;
+        for (size_t i = 0; i < opts->array.size(); ++i) {
+            const Value& o = opts->array[i];
+            const std::string where = "options[" + std::to_string(i) + "]: ";
+            if (!o.isObject()) { error = where + "debe ser un objeto"; return false; }
+            engine::OptionDef od;
+            std::string e;
+            if (!readString(o, "id", od.id, true, 48, e)) { error = where + e; return false; }
+            if (!validIdentifier(od.id, 48)) { error = where + "id no válido"; return false; }
+            if (!seen.insert(od.id).second) { error = where + "id duplicado"; return false; }
+            if (!readString(o, "label", od.label, true, 64, e)) { error = where + e; return false; }
+            if (!readBool(o, "default", od.defaultValue, false, e)) { error = where + e; return false; }
+            def.options.push_back(std::move(od));
+        }
+    }
+
+    const Value* actions = root.find("actions");
+    if (!actions) { error = "Falta 'actions'"; return false; }
+    ParseCtx ctx;
+    ctx.def = &def;
+    if (!parseActionList(*actions, 1, def.actions, ctx, "actions")) { error = ctx.err; return false; }
+
+    uint64_t count = 0, ms = 0;
+    accumulate(def.actions, count, ms);
+    def.expandedActionCount = count;
+    def.worstCaseDurationMs = ms;
+    if (count > kMaxExpandedActions) {
+        error = "La secuencia expandida supera " + std::to_string(kMaxExpandedActions) + " acciones";
+        return false;
+    }
+    if (ms > kMaxWorstCaseMs) {
+        error = "La duración máxima supera " + std::to_string(kMaxWorstCaseMs) + " ms";
+        return false;
+    }
+    return true;
+}
+
+LoadResult loadMacroDirectory(const std::filesystem::path& directory) {
+    LoadResult result;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec)) {
+        result.errors.push_back({directory.wstring(), "La carpeta de macros no existe"});
+        return result;
+    }
+
+    std::vector<std::filesystem::path> files;
+    for (std::filesystem::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        std::wstring ext = it->path().extension().wstring();
+        if (_wcsicmp(ext.c_str(), L".json") == 0) files.push_back(it->path());
+    }
+    if (ec) result.errors.push_back({directory.wstring(), "Error al enumerar la carpeta de macros"});
+    std::sort(files.begin(), files.end());
+
+    std::set<std::string> ids;
+    for (const auto& file : files) {
+        if (result.macros.size() >= kMaxMacros) {
+            result.errors.push_back({file.filename().wstring(), "Límite de macros alcanzado (64); archivo ignorado"});
+            continue;
+        }
+        std::string text, err;
+        if (!readFile(file, text, err)) {
+            result.errors.push_back({file.filename().wstring(), err});
+            continue;
+        }
+        auto def = std::make_shared<engine::MacroDefinition>();
+        try {
+            if (!parseMacroDefinition(text, *def, err)) {
+                result.errors.push_back({file.filename().wstring(), err});
+                continue;
+            }
+        } catch (const std::exception& ex) {
+            result.errors.push_back({file.filename().wstring(), std::string("Error interno: ") + ex.what()});
+            continue;
+        }
+        if (!ids.insert(def->id).second) {
+            result.errors.push_back({file.filename().wstring(), "id duplicado '" + def->id + "'; archivo ignorado"});
+            continue;
+        }
+        def->sourceFile = file.filename().wstring();
+        result.macros.push_back(std::move(def));
+    }
+
+    std::stable_sort(result.macros.begin(), result.macros.end(), [](const auto& a, const auto& b) {
+        if (a->order != b->order) return a->order < b->order;
+        return a->name < b->name;
+    });
+    return result;
+}
+
+} // namespace rms::loader

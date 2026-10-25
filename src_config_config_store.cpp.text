@@ -1,0 +1,184 @@
+#include "config_store.h"
+
+#include "../input/keys.h"
+#include "../macro_engine/calibration.h"
+#include "../utilities/json.h"
+#include "../utilities/platform.h"
+
+#include <cmath>
+#include <fstream>
+#include <set>
+#include <sstream>
+
+namespace rms::config {
+namespace {
+
+using json::Value;
+
+bool getNumber(const Value& o, const char* key, double& out) {
+    const Value* v = o.find(key);
+    if (!v || !v->isNumber()) return false;
+    out = v->number;
+    return true;
+}
+
+bool getIntIn(const Value& o, const char* key, int lo, int hi, int& out) {
+    double d = 0;
+    if (!getNumber(o, key, d) || std::floor(d) != d || d < lo || d > hi) return false;
+    out = static_cast<int>(d);
+    return true;
+}
+
+bool getBool(const Value& o, const char* key, bool& out) {
+    const Value* v = o.find(key);
+    if (!v || !v->isBool()) return false;
+    out = v->boolean;
+    return true;
+}
+
+} // namespace
+
+ConfigStore::ConfigStore(std::filesystem::path file) : file_(std::move(file)) {}
+
+AppSettings ConfigStore::load(std::string& warning) const {
+    AppSettings s;
+    warning.clear();
+    std::error_code ec;
+    if (!std::filesystem::exists(file_, ec)) {
+        warning = "No existe configuración previa; se usan valores predeterminados.";
+        return s;
+    }
+    std::string text;
+    {
+        std::ifstream f(file_, std::ios::binary);
+        if (!f) { warning = "No se pudo abrir la configuración; valores predeterminados."; return s; }
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        text = ss.str();
+    }
+    if (text.size() > 1024 * 1024) { warning = "Configuración demasiado grande; valores predeterminados."; return s; }
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF) text.erase(0, 3);
+
+    Value root;
+    std::string err;
+    if (!json::parse(text, root, err) || !root.isObject()) {
+        std::filesystem::path bad = file_;
+        bad += L".bad";
+        std::filesystem::copy_file(file_, bad, std::filesystem::copy_options::overwrite_existing, ec);
+        warning = "Configuración dañada (" + err + "). Copia guardada como settings.json.bad; valores predeterminados.";
+        return s;
+    }
+
+    double sens = 0;
+    if (getNumber(root, "sensitivity", sens) && calibration::isValidSensitivity(sens)) s.sensitivity = sens;
+    getBool(root, "globalEnabled", s.globalEnabled);
+    getBool(root, "alwaysOnTop", s.alwaysOnTop);
+    if (const Value* bg = root.find("backgroundImage"); bg && bg->isString())
+        s.backgroundImage = platform::utf8ToWide(bg->string);
+
+    if (const Value* w = root.find("window"); w && w->isObject()) {
+        getIntIn(*w, "x", -32000, 32000, s.window.x);
+        getIntIn(*w, "y", -32000, 32000, s.window.y);
+        getIntIn(*w, "width", 640, 10000, s.window.width);
+        getIntIn(*w, "height", 480, 10000, s.window.height);
+        getBool(*w, "maximized", s.window.maximized);
+    }
+
+    if (const Value* macros = root.find("macros"); macros && macros->isObject()) {
+        for (const auto& kv : macros->object) {
+            if (!kv.second.isObject() || kv.first.size() > 48) continue;
+            MacroSettings ms;
+            if (const Value* hk = kv.second.find("hotkey"); hk && hk->isString()) {
+                uint16_t vk = keys::vkFromName(hk->string);
+                if (keys::isValidHotkeyVk(vk)) ms.hotkeyVk = vk;
+            }
+            getBool(kv.second, "enabled", ms.enabled);
+            int md = 0;
+            if (getIntIn(kv.second, "maxDelayMs", 0, static_cast<int>(kMaxDelayLimitMs), md))
+                ms.maxDelayMs = static_cast<uint32_t>(md);
+            if (const Value* opts = kv.second.find("options"); opts && opts->isObject())
+                for (const auto& o : opts->object)
+                    if (o.second.isBool()) ms.options[o.first] = o.second.boolean;
+            s.macros[kv.first] = std::move(ms);
+        }
+    }
+    return s;
+}
+
+bool ConfigStore::save(const AppSettings& s, std::string& error) const {
+    Value root = Value::makeObject();
+    root.set("version", Value::makeNumber(1));
+    root.set("sensitivity", Value::makeNumber(s.sensitivity));
+    root.set("globalEnabled", Value::makeBool(s.globalEnabled));
+    root.set("alwaysOnTop", Value::makeBool(s.alwaysOnTop));
+    root.set("backgroundImage", Value::makeString(platform::wideToUtf8(s.backgroundImage)));
+
+    Value w = Value::makeObject();
+    w.set("x", Value::makeNumber(s.window.x));
+    w.set("y", Value::makeNumber(s.window.y));
+    w.set("width", Value::makeNumber(s.window.width));
+    w.set("height", Value::makeNumber(s.window.height));
+    w.set("maximized", Value::makeBool(s.window.maximized));
+    root.set("window", std::move(w));
+
+    Value macros = Value::makeObject();
+    for (const auto& kv : s.macros) {
+        Value m = Value::makeObject();
+        m.set("hotkey", Value::makeString(keys::nameFromVk(kv.second.hotkeyVk)));
+        m.set("enabled", Value::makeBool(kv.second.enabled));
+        m.set("maxDelayMs", Value::makeNumber(kv.second.maxDelayMs));
+        Value opts = Value::makeObject();
+        for (const auto& o : kv.second.options) opts.set(o.first, Value::makeBool(o.second));
+        m.set("options", std::move(opts));
+        macros.set(kv.first, std::move(m));
+    }
+    root.set("macros", std::move(macros));
+
+    std::error_code ec;
+    std::filesystem::create_directories(file_.parent_path(), ec);
+    std::filesystem::path tmp = file_;
+    tmp += L".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) { error = "No se puede escribir el archivo temporal de configuración"; return false; }
+        const std::string text = json::serialize(root, 2);
+        f.write(text.data(), static_cast<std::streamsize>(text.size()));
+        if (!f) { error = "Error al escribir la configuración"; return false; }
+    }
+    if (!MoveFileExW(tmp.c_str(), file_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        error = "No se pudo reemplazar settings.json (código " + std::to_string(GetLastError()) + ")";
+        std::filesystem::remove(tmp, ec);
+        return false;
+    }
+    return true;
+}
+
+void ConfigStore::reconcile(AppSettings& s,
+                            const std::vector<std::shared_ptr<const engine::MacroDefinition>>& defs) {
+    std::set<uint16_t> usedHotkeys;
+    for (const auto& def : defs) {
+        auto it = s.macros.find(def->id);
+        if (it == s.macros.end()) {
+            MacroSettings ms;
+            ms.hotkeyVk = def->defaultHotkeyVk;
+            ms.enabled = def->defaultEnabled;
+            it = s.macros.emplace(def->id, ms).first;
+        }
+        MacroSettings& ms = it->second;
+
+        std::map<std::string, bool> cleaned;
+        for (const auto& opt : def->options) {
+            auto o = ms.options.find(opt.id);
+            cleaned[opt.id] = (o != ms.options.end()) ? o->second : opt.defaultValue;
+        }
+        ms.options = std::move(cleaned);
+
+        if (ms.maxDelayMs > kMaxDelayLimitMs) ms.maxDelayMs = 0;
+
+        // Conflicting hotkeys: the first macro (by display order) keeps it; later ones are unassigned.
+        if (ms.hotkeyVk != 0 && !usedHotkeys.insert(ms.hotkeyVk).second) ms.hotkeyVk = 0;
+    }
+    if (!calibration::isValidSensitivity(s.sensitivity)) s.sensitivity = calibration::kDefaultSensitivity;
+}
+
+} // namespace rms::config

@@ -1,0 +1,138 @@
+#pragma once
+// Owner-drawn main window: header bar, generated tab strip, per-macro panel,
+// sequence view and status bar. No standard Win32 controls are created.
+
+#include "../app/application.h"
+#include "background_image.h"
+
+#include <string>
+#include <vector>
+
+namespace rms::ui {
+
+class MainWindow {
+public:
+    MainWindow();
+    ~MainWindow();
+    MainWindow(const MainWindow&) = delete;
+    MainWindow& operator=(const MainWindow&) = delete;
+
+    static bool registerClass(HINSTANCE instance, std::wstring& error);
+
+    bool create(HINSTANCE instance, app::Application& application, std::wstring& error);
+    HWND handle() const { return hwnd_; }
+
+private:
+    // --- Window plumbing ---
+    static LRESULT CALLBACK wndProcStatic(HWND, UINT, WPARAM, LPARAM);
+    LRESULT wndProc(UINT msg, WPARAM wParam, LPARAM lParam);
+
+    // --- Fonts / DPI ---
+    void createFonts();
+    void destroyFonts();
+    int dp(int value) const { return MulDiv(value, dpi_, 96); }
+
+    // --- Layout ---
+    void layout();
+    void invalidate();
+
+    // --- Painting ---
+    void paint(HDC dc);
+    void paintHeader(HDC dc);
+    void paintTabs(HDC dc);
+    void paintMacroPanel(HDC dc);
+    void paintSequence(HDC dc, const RECT& area);
+    void paintStatusBar(HDC dc);
+    void paintToggle(HDC dc, const RECT& r, bool on, COLORREF accent, bool hot) const;
+    void paintButton(HDC dc, const RECT& r, const std::wstring& label, bool hot,
+                     COLORREF fill, COLORREF border, COLORREF textColor, HFONT font) const;
+    void paintNumberField(HDC dc, const RECT& r, const std::wstring& value, bool focused, bool hot) const;
+
+    // --- Interaction ---
+    void onMouseMove(POINT p);
+    void onLeftDown(POINT p);
+    void onMouseWheel(int delta);
+    void onKeyDown(WPARAM vk);
+    void onChar(wchar_t ch);
+    void onHotkey(int id);
+    void onEngineEvent(engine::EngineEvent* ev);
+    void onCommandTick();
+
+    // --- Actions ---
+    void beginHotkeyCapture();
+    void cancelHotkeyCapture();
+    void assignHotkey(uint16_t vk);
+    void toggleEnabled();
+    void toggleOption(size_t optionIndex);
+    void adjustSensitivity(double delta);
+    void adjustMaxDelay(int deltaMs);
+    void commitEditing();
+    void chooseBackground();
+    void removeBackground();
+    void toggleAlwaysOnTop();
+    void toggleGlobalEnabled();
+    void doReload();
+    void persist();
+    void rememberWindowPlacement();
+
+    // --- Helpers ---
+    const engine::MacroDefinition* currentMacro() const;
+    config::MacroSettings* currentSettings();
+    COLORREF currentAccent() const;
+    std::vector<std::wstring> buildSequenceLines(const engine::MacroDefinition& def) const;
+    std::wstring statusLine() const;
+
+    enum class Field { None, Sensitivity, MaxDelay };
+
+    // --- State ---
+    HWND hwnd_ = nullptr;
+    HINSTANCE instance_ = nullptr;
+    app::Application* app_ = nullptr;
+    BackgroundImage background_;
+    int dpi_ = 96;
+
+    HFONT fontTitle_ = nullptr;
+    HFONT fontHeading_ = nullptr;
+    HFONT fontBody_ = nullptr;
+    HFONT fontSmall_ = nullptr;
+    HFONT fontMono_ = nullptr;
+
+    size_t activeTab_ = 0;
+    int sequenceScroll_ = 0;
+    int sequenceContentHeight_ = 0;
+    int hotId_ = -1;                 // widget under the cursor (see IDs in the .cpp)
+    bool capturingHotkey_ = false;
+    Field editing_ = Field::None;
+    std::wstring editBuffer_;
+
+    std::wstring runningMacro_;
+    std::wstring lastOutcome_;
+    std::wstring message_;           // transient feedback shown in the header
+    DWORD messageUntil_ = 0;
+
+    // Layout rectangles, recomputed on every resize / state change.
+    RECT rcClient_{};
+    RECT rcHeader_{};
+    RECT rcTitle_{};
+    RECT rcDisableAll_{};
+    RECT rcAlwaysOnTop_{};
+    RECT rcSensMinus_{};
+    RECT rcSensField_{};
+    RECT rcSensPlus_{};
+    RECT rcBgChoose_{};
+    RECT rcBgRemove_{};
+    RECT rcReload_{};
+    RECT rcTabStrip_{};
+    std::vector<RECT> rcTabs_;
+    RECT rcPanel_{};
+    RECT rcHotkeyButton_{};
+    RECT rcEnableToggle_{};
+    RECT rcDelayMinus_{};
+    RECT rcDelayField_{};
+    RECT rcDelayPlus_{};
+    std::vector<RECT> rcOptions_;
+    RECT rcSequence_{};
+    RECT rcStatus_{};
+};
+
+} // namespace rms::ui

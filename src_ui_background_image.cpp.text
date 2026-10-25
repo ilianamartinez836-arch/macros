@@ -1,0 +1,127 @@
+#include "background_image.h"
+
+#include <wincodec.h>
+
+#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "ole32.lib")
+
+namespace rms::ui {
+namespace {
+
+template <typename T>
+void safeRelease(T*& p) {
+    if (p) { p->Release(); p = nullptr; }
+}
+
+} // namespace
+
+BackgroundImage::~BackgroundImage() { clear(); }
+
+void BackgroundImage::clear() {
+    if (bitmap_) { DeleteObject(bitmap_); bitmap_ = nullptr; }
+    width_ = height_ = 0;
+    path_.clear();
+}
+
+bool BackgroundImage::load(const std::wstring& path, std::string& error) {
+    clear();
+    error.clear();
+    if (path.empty()) { error = "No se ha indicado ninguna ruta de imagen."; return false; }
+
+    IWICImagingFactory* factory = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&factory));
+    if (FAILED(hr) || !factory) { error = "No se pudo inicializar WIC (decodificador de imágenes)."; return false; }
+
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    bool ok = false;
+
+    hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                            WICDecodeMetadataCacheOnLoad, &decoder);
+    if (FAILED(hr)) {
+        error = "No se pudo abrir la imagen (archivo inexistente o formato no admitido).";
+    } else if (FAILED(decoder->GetFrame(0, &frame))) {
+        error = "La imagen no contiene ningún fotograma legible.";
+    } else {
+        UINT w = 0, h = 0;
+        if (FAILED(frame->GetSize(&w, &h)) || w == 0 || h == 0) {
+            error = "Dimensiones de imagen no válidas.";
+        } else if (w > 16384 || h > 16384) {
+            error = "La imagen es demasiado grande (máx. 16384 px por lado).";
+        } else if (FAILED(factory->CreateFormatConverter(&converter))) {
+            error = "No se pudo crear el conversor de formato.";
+        } else if (FAILED(converter->Initialize(frame, GUID_WICPixelFormat32bppBGR,
+                                                WICBitmapDitherTypeNone, nullptr, 0.0,
+                                                WICBitmapPaletteTypeCustom))) {
+            error = "No se pudo convertir la imagen a 32 bits.";
+        } else {
+            BITMAPINFO bi{};
+            bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth = static_cast<LONG>(w);
+            bi.bmiHeader.biHeight = -static_cast<LONG>(h); // top-down
+            bi.bmiHeader.biPlanes = 1;
+            bi.bmiHeader.biBitCount = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+
+            void* pixels = nullptr;
+            HDC screen = GetDC(nullptr);
+            HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &pixels, nullptr, 0);
+            ReleaseDC(nullptr, screen);
+
+            if (!dib || !pixels) {
+                error = "No hay memoria suficiente para la imagen.";
+                if (dib) DeleteObject(dib);
+            } else {
+                const UINT stride = w * 4;
+                const UINT bufferSize = stride * h;
+                if (SUCCEEDED(converter->CopyPixels(nullptr, stride, bufferSize,
+                                                    static_cast<BYTE*>(pixels)))) {
+                    bitmap_ = dib;
+                    width_ = static_cast<int>(w);
+                    height_ = static_cast<int>(h);
+                    path_ = path;
+                    ok = true;
+                } else {
+                    error = "Error al leer los píxeles de la imagen.";
+                    DeleteObject(dib);
+                }
+            }
+        }
+    }
+
+    safeRelease(converter);
+    safeRelease(frame);
+    safeRelease(decoder);
+    safeRelease(factory);
+    if (!ok && error.empty()) error = "No se pudo cargar la imagen.";
+    return ok;
+}
+
+bool BackgroundImage::draw(HDC dc, const RECT& dest) const {
+    if (!bitmap_ || width_ <= 0 || height_ <= 0) return false;
+    const int dw = dest.right - dest.left;
+    const int dh = dest.bottom - dest.top;
+    if (dw <= 0 || dh <= 0) return false;
+
+    // "Cover": scale so the image fills the area, crop the overflowing axis.
+    const double scale = max(static_cast<double>(dw) / width_, static_cast<double>(dh) / height_);
+    const int srcW = max(1, static_cast<int>(dw / scale));
+    const int srcH = max(1, static_cast<int>(dh / scale));
+    const int srcX = (width_ - srcW) / 2;
+    const int srcY = (height_ - srcH) / 2;
+
+    HDC mem = CreateCompatibleDC(dc);
+    if (!mem) return false;
+    HGDIOBJ old = SelectObject(mem, bitmap_);
+    const int prevMode = SetStretchBltMode(dc, HALFTONE);
+    SetBrushOrgEx(dc, 0, 0, nullptr);
+    const BOOL okBlt = StretchBlt(dc, dest.left, dest.top, dw, dh, mem, srcX, srcY, srcW, srcH, SRCCOPY);
+    SetStretchBltMode(dc, prevMode);
+    SelectObject(mem, old);
+    DeleteDC(mem);
+    return okBlt != FALSE;
+}
+
+} // namespace rms::ui

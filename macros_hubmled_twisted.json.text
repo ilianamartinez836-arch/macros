@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "id": "hubmled_twisted",
+  "order": 5,
+  "name": "HUBMLED TWISTED",
+  "accent": "#22C55E",
+  "description": "Q, giro corto a la izquierda, giro amplio a la derecha y corrección final.",
+  "defaultHotkey": "F7",
+  "defaultEnabled": true,
+  "options": [],
+  "actions": [
+    { "type": "keyDown", "key": "Q" },
+    { "type": "keyUp", "key": "Q" },
+    { "type": "waitRandom", "min": 122, "max": 128 },
+    { "type": "repeat", "count": 5, "actions": [
+      { "type": "move", "dx": -55 },
+      { "type": "wait", "ms": 1 }
+    ]},
+    { "type": "wait", "ms": 30 },
+    { "type": "repeat", "count": 5, "actions": [
+      { "type": "move", "dx": 124 },
+      { "type": "wait", "ms": 10 }
+    ]},
+    { "type": "wait", "ms": 21 },
+    { "type": "repeat", "count": 5, "actions": [
+      { "type": "move", "dx": -69 },
+      { "type": "wait", "ms": 15 }
+    ]}
+  ]
+}

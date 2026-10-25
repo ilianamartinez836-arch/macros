@@ -1,0 +1,135 @@
+#include "application.h"
+
+#include "../macro_engine/calibration.h"
+#include "../utilities/platform.h"
+
+namespace rms::app {
+
+Application::Application()
+    : store_(platform::settingsFilePath()), engine_(input_) {}
+
+Application::~Application() { shutdown(); }
+
+bool Application::initialize(HWND window, std::string& error) {
+    window_ = window;
+    settings_ = store_.load(startupWarning_);
+
+    HWND target = window_;
+    engine::MacroEngine::Listener listener = [target](const engine::EngineEvent& ev) {
+        // Called on the worker thread: copy and hand over to the UI thread.
+        auto* copy = new (std::nothrow) engine::EngineEvent(ev);
+        if (!copy) return;
+        if (!PostMessageW(target, WM_RMS_ENGINE_EVENT, 0, reinterpret_cast<LPARAM>(copy)))
+            delete copy;
+    };
+    if (!engine_.start(std::move(listener), error)) return false;
+
+    reloadMacros();
+    engine_.setArmed(settings_.globalEnabled);
+    initialized_ = true;
+    return true;
+}
+
+void Application::shutdown() {
+    if (window_) unregisterHotkeys();
+    engine_.shutdown(); // cancels, joins, releases every input we are holding
+    if (initialized_) {
+        std::string err;
+        store_.save(settings_, err); // best effort on exit
+    }
+    initialized_ = false;
+    window_ = nullptr;
+}
+
+void Application::reloadMacros() {
+    try {
+        load_ = loader::loadMacroDirectory(platform::macrosDirectory());
+    } catch (const std::exception& ex) {
+        load_ = loader::LoadResult{};
+        load_.errors.push_back({L"macros", std::string("Error al cargar la carpeta: ") + ex.what()});
+    }
+    config::ConfigStore::reconcile(settings_, load_.macros);
+    registerHotkeys();
+}
+
+config::MacroSettings& Application::settingsFor(const std::string& macroId) {
+    auto it = settings_.macros.find(macroId);
+    if (it == settings_.macros.end()) it = settings_.macros.emplace(macroId, config::MacroSettings{}).first;
+    return it->second;
+}
+
+bool Application::saveSettings(std::string& error) { return store_.save(settings_, error); }
+
+void Application::unregisterHotkeys() {
+    for (int id : registeredHotkeyIds_) UnregisterHotKey(window_, id);
+    registeredHotkeyIds_.clear();
+}
+
+void Application::registerHotkeys() {
+    unregisterHotkeys();
+    if (!window_) return;
+    for (size_t i = 0; i < load_.macros.size(); ++i) {
+        const auto& def = load_.macros[i];
+        const config::MacroSettings& ms = settingsFor(def->id);
+        if (ms.hotkeyVk == 0) continue;
+        const int id = kHotkeyIdBase + static_cast<int>(i);
+        // MOD_NOREPEAT: auto-repeat while held must not queue several runs.
+        if (RegisterHotKey(window_, id, MOD_NOREPEAT, ms.hotkeyVk))
+            registeredHotkeyIds_.push_back(id);
+    }
+}
+
+int Application::macroIndexForHotkeyId(int id) const {
+    const int index = id - kHotkeyIdBase;
+    if (index < 0 || static_cast<size_t>(index) >= load_.macros.size()) return -1;
+    return index;
+}
+
+engine::SubmitResult Application::trigger(size_t index) {
+    if (index >= load_.macros.size()) return engine::SubmitResult::InvalidRequest;
+    const auto& def = load_.macros[index];
+    const config::MacroSettings& ms = settingsFor(def->id);
+    if (!settings_.globalEnabled) return engine::SubmitResult::Disarmed;
+    if (!ms.enabled) return engine::SubmitResult::Disarmed;
+
+    engine::RunRequest req;
+    req.definition = def;
+    req.maxDelayMs = ms.maxDelayMs;
+    req.sensitivity = settings_.sensitivity;
+    for (const auto& opt : def->options) {
+        auto it = ms.options.find(opt.id);
+        req.options[opt.id] = (it != ms.options.end()) ? it->second : opt.defaultValue;
+    }
+    return engine_.submit(std::move(req));
+}
+
+void Application::setGlobalEnabled(bool enabled) {
+    settings_.globalEnabled = enabled;
+    engine_.setArmed(enabled); // cancels the running sequence and releases held inputs
+    std::string err;
+    store_.save(settings_, err);
+}
+
+MonitorInfoSnapshot Application::currentMonitor() {
+    MonitorInfoSnapshot snap;
+    HWND fg = nullptr;
+    if (focus_.isRobloxForeground(&fg) && fg) {
+        if (input::monitorSizeForWindow(fg, snap.width, snap.height)) {
+            snap.fromRoblox = true;
+            return snap;
+        }
+    }
+    HMONITOR mon = MonitorFromWindow(window_ ? window_ : GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (mon && GetMonitorInfoW(mon, &mi)) {
+        snap.width = mi.rcMonitor.right - mi.rcMonitor.left;
+        snap.height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    } else {
+        snap.width = calibration::kReferenceWidth;
+        snap.height = calibration::kReferenceHeight;
+    }
+    return snap;
+}
+
+} // namespace rms::app

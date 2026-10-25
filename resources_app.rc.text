@@ -1,0 +1,49 @@
+// Roblox Macro Suite — resource script.
+// Only the manifest and version information are embedded. No icon file is
+// referenced because none is shipped with this project; the app uses the
+// system default icon (IDI_APPLICATION) at runtime.
+
+#include <winver.h>
+#include <winuser.h>
+
+/////////////////////////////////////////////////////////////////////////////
+// Application manifest (elevation + per-monitor DPI v2).
+// CREATEPROCESS_MANIFEST_RESOURCE_ID = 1
+
+1 RT_MANIFEST "app.manifest"
+
+/////////////////////////////////////////////////////////////////////////////
+// Version information
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "0c0a04b0"
+        BEGIN
+            VALUE "CompanyName",      "Roblox Macro Suite"
+            VALUE "FileDescription",  "Roblox Macro Suite"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "RobloxMacroSuite"
+            VALUE "LegalCopyright",   "Uso personal"
+            VALUE "OriginalFilename", "RobloxMacroSuite.exe"
+            VALUE "ProductName",      "Roblox Macro Suite"
+            VALUE "ProductVersion",   "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x40a, 1200
+    END
+END

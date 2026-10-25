@@ -1,0 +1,117 @@
+#pragma once
+// Dark gaming theme: palette, metrics and small GDI drawing helpers.
+// Everything is owner-drawn; no standard Windows controls are used anywhere.
+
+#include "../utilities/platform.h"
+
+#include <string>
+
+namespace rms::ui::theme {
+
+// --- Palette (0x00BBGGRR as required by COLORREF) -------------------------
+constexpr COLORREF kBackground     = RGB(10, 13, 20);
+constexpr COLORREF kPanel          = RGB(19, 24, 36);
+constexpr COLORREF kPanelAlt       = RGB(26, 32, 46);
+constexpr COLORREF kPanelHot       = RGB(34, 42, 60);
+constexpr COLORREF kBorder         = RGB(44, 54, 76);
+constexpr COLORREF kBorderStrong   = RGB(70, 86, 118);
+constexpr COLORREF kText           = RGB(228, 234, 245);
+constexpr COLORREF kTextDim        = RGB(146, 158, 180);
+constexpr COLORREF kTextFaint      = RGB(99, 111, 132);
+constexpr COLORREF kDanger         = RGB(239, 68, 68);
+constexpr COLORREF kDangerDark     = RGB(92, 24, 28);
+constexpr COLORREF kSuccess        = RGB(34, 197, 94);
+constexpr COLORREF kWarning        = RGB(234, 179, 8);
+constexpr COLORREF kAccentDefault  = RGB(99, 180, 255);
+
+constexpr BYTE kPanelAlpha = 214; // opacity of panels drawn over a background image
+
+inline COLORREF fromRgb24(uint32_t rgb) {
+    return RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+}
+
+inline COLORREF mix(COLORREF a, COLORREF b, double t) {
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+    const double inv = 1.0 - t;
+    return RGB(static_cast<int>(GetRValue(a) * inv + GetRValue(b) * t),
+               static_cast<int>(GetGValue(a) * inv + GetGValue(b) * t),
+               static_cast<int>(GetBValue(a) * inv + GetBValue(b) * t));
+}
+
+// --- Drawing helpers ------------------------------------------------------
+
+inline void fillRect(HDC dc, const RECT& r, COLORREF color) {
+    HBRUSH brush = CreateSolidBrush(color);
+    FillRect(dc, &r, brush);
+    DeleteObject(brush);
+}
+
+inline void roundRect(HDC dc, const RECT& r, int radius, COLORREF fill, COLORREF border, int borderWidth = 1) {
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, borderWidth, border);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(brush);
+    DeleteObject(pen);
+}
+
+// Semi-transparent panel so text stays readable over a user background image.
+inline void panel(HDC dc, const RECT& r, COLORREF color, BYTE alpha, COLORREF border, int radius = 8) {
+    const int w = r.right - r.left;
+    const int h = r.bottom - r.top;
+    if (w <= 0 || h <= 0) return;
+    if (alpha >= 250) { roundRect(dc, r, radius, color, border); return; }
+
+    HDC mem = CreateCompatibleDC(dc);
+    if (!mem) { roundRect(dc, r, radius, color, border); return; }
+    HBITMAP bmp = CreateCompatibleBitmap(dc, w, h);
+    if (!bmp) { DeleteDC(mem); roundRect(dc, r, radius, color, border); return; }
+    HGDIOBJ oldBmp = SelectObject(mem, bmp);
+    RECT local{0, 0, w, h};
+    fillRect(mem, local, color);
+
+    BLENDFUNCTION bf{};
+    bf.BlendOp = AC_SRC_OVER;
+    bf.SourceConstantAlpha = alpha;
+    AlphaBlend(dc, r.left, r.top, w, h, mem, 0, 0, w, h, bf);
+
+    SelectObject(mem, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+
+    // Border on top of the blended fill.
+    HPEN pen = CreatePen(PS_SOLID, 1, border);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+inline void text(HDC dc, const RECT& r, const std::wstring& s, HFONT font, COLORREF color, UINT format) {
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    RECT box = r;
+    DrawTextW(dc, s.c_str(), static_cast<int>(s.size()), &box, format);
+    SelectObject(dc, oldFont);
+}
+
+inline SIZE measure(HDC dc, const std::wstring& s, HFONT font) {
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    SIZE sz{0, 0};
+    GetTextExtentPoint32W(dc, s.c_str(), static_cast<int>(s.size()), &sz);
+    SelectObject(dc, oldFont);
+    return sz;
+}
+
+inline bool hit(const RECT& r, POINT p) { return PtInRect(&r, p) != FALSE; }
+
+inline RECT makeRect(int x, int y, int w, int h) { return RECT{x, y, x + w, y + h}; }
+
+} // namespace rms::ui::theme

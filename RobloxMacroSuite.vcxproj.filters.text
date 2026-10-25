@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="src">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-000000000001}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\app">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-000000000002}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\ui">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-000000000003}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\macro_engine">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-000000000004}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\macro_loader">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-000000000005}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\input">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-000000000006}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\config">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-000000000007}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\utilities">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-000000000008}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="resources">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-000000000009}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="macros">
+      <UniqueIdentifier>{1a000000-0000-4000-8000-00000000000a}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="src\app\application.cpp"><Filter>src\app</Filter></ClCompile>
+    <ClCompile Include="src\ui\background_image.cpp"><Filter>src\ui</Filter></ClCompile>
+    <ClCompile Include="src\ui\main_window.cpp"><Filter>src\ui</Filter></ClCompile>
+    <ClCompile Include="src\macro_engine\macro_engine.cpp"><Filter>src\macro_engine</Filter></ClCompile>
+    <ClCompile Include="src\macro_loader\macro_loader.cpp"><Filter>src\macro_loader</Filter></ClCompile>
+    <ClCompile Include="src\config\config_store.cpp"><Filter>src\config</Filter></ClCompile>
+    <ClCompile Include="src\input\keys.cpp"><Filter>src\input</Filter></ClCompile>
+    <ClCompile Include="src\input\input_controller.cpp"><Filter>src\input</Filter></ClCompile>
+    <ClCompile Include="src\input\roblox_focus.cpp"><Filter>src\input</Filter></ClCompile>
+    <ClCompile Include="src\utilities\json.cpp"><Filter>src\utilities</Filter></ClCompile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="src\app\application.h"><Filter>src\app</Filter></ClInclude>
+    <ClInclude Include="src\ui\theme.h"><Filter>src\ui</Filter></ClInclude>
+    <ClInclude Include="src\ui\background_image.h"><Filter>src\ui</Filter></ClInclude>
+    <ClInclude Include="src\ui\main_window.h"><Filter>src\ui</Filter></ClInclude>
+    <ClInclude Include="src\macro_engine\macro_definition.h"><Filter>src\macro_engine</Filter></ClInclude>
+    <ClInclude Include="src\macro_engine\calibration.h"><Filter>src\macro_engine</Filter></ClInclude>
+    <ClInclude Include="src\macro_engine\macro_engine.h"><Filter>src\macro_engine</Filter></ClInclude>
+    <ClInclude Include="src\macro_loader\macro_loader.h"><Filter>src\macro_loader</Filter></ClInclude>
+    <ClInclude Include="src\config\config_store.h"><Filter>src\config</Filter></ClInclude>
+    <ClInclude Include="src\input\keys.h"><Filter>src\input</Filter></ClInclude>
+    <ClInclude Include="src\input\input_controller.h"><Filter>src\input</Filter></ClInclude>
+    <ClInclude Include="src\input\roblox_focus.h"><Filter>src\input</Filter></ClInclude>
+    <ClInclude Include="src\utilities\platform.h"><Filter>src\utilities</Filter></ClInclude>
+    <ClInclude Include="src\utilities\json.h"><Filter>src\utilities</Filter></ClInclude>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ResourceCompile Include="resources\app.rc"><Filter>resources</Filter></ResourceCompile>
+    <None Include="resources\app.manifest"><Filter>resources</Filter></None>
+    <None Include="macros\solitude.json"><Filter>macros</Filter></None>
+    <None Include="macros\twinnie.json"><Filter>macros</Filter></None>
+    <None Include="macros\bullshit_180.json"><Filter>macros</Filter></None>
+    <None Include="macros\solitude_v2.json"><Filter>macros</Filter></None>
+    <None Include="macros\hubmled_twisted.json"><Filter>macros</Filter></None>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "id": "bullshit_180",
+  "order": 3,
+  "name": "BULLSHIT 180°",
+  "accent": "#EF4444",
+  "description": "Uppercut opcional con salto, Q y giro progresivo de 180° hacia la izquierda.",
+  "defaultHotkey": "F4",
+  "defaultEnabled": true,
+  "options": [
+    { "id": "jump_uppercut", "label": "Jump Uppercut", "default": true }
+  ],
+  "actions": [
+    { "type": "if", "option": "jump_uppercut", "actions": [
+      { "type": "keyDown", "key": "Space" },
+      { "type": "mouseDown", "button": "left" },
+      { "type": "waitRandom", "min": 128, "max": 358 },
+      { "type": "mouseUp", "button": "left" },
+      { "type": "keyDown", "key": "W" },
+      { "type": "keyUp", "key": "Space" }
+    ]},
+    { "type": "keyDown", "key": "Q" },
+    { "type": "keyUp", "key": "Q" },
+    { "type": "waitRandom", "min": 128, "max": 233 },
+    { "type": "move", "dx": -100 },
+    { "type": "wait", "ms": 11 },
+    { "type": "move", "dx": -130 },
+    { "type": "wait", "ms": 11 },
+    { "type": "move", "dx": -140 },
+    { "type": "wait", "ms": 11 },
+    { "type": "move", "dx": -150 },
+    { "type": "wait", "ms": 11 },
+    { "type": "move", "dx": -150 },
+    { "type": "wait", "ms": 11 },
+    { "type": "move", "dx": -120 },
+    { "type": "wait", "ms": 11 },
+    { "type": "move", "dx": -120 },
+    { "type": "move", "dx": 50 },
+    { "type": "wait", "ms": 30 },
+    { "type": "if", "option": "jump_uppercut", "actions": [
+      { "type": "keyUp", "key": "W" }
+    ]}
+  ]
+}

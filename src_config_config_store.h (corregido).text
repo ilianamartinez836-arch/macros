@@ -1,0 +1,65 @@
+#pragma once
+// Persistent settings in <exe>/config/settings.json (UTF-8 JSON).
+// Corrupt file -> safe defaults, original backed up as settings.json.bad, startup never blocked.
+
+#include "../macro_engine/macro_definition.h"
+
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace rms::config {
+
+constexpr uint32_t kMaxDelayLimitMs = 10000;
+
+struct MacroSettings {
+    uint16_t hotkeyVk = 0;   // 0 = unassigned
+    bool enabled = true;
+    uint32_t maxDelayMs = 0; // 0 = off
+    std::map<std::string, bool> options;
+};
+
+struct WindowSettings {
+    // Declared first: used as the default initialiser of x and y below.
+    static constexpr int kUseDefaultPos = -32768;
+
+    int x = kUseDefaultPos;
+    int y = kUseDefaultPos;
+    int width = 980;
+    int height = 680;
+    bool maximized = false;
+};
+
+struct AppSettings {
+    double sensitivity = 0.74;
+    bool globalEnabled = true;
+    bool alwaysOnTop = true;
+    std::wstring backgroundImage;
+    WindowSettings window;
+    std::map<std::string, MacroSettings> macros; // keyed by macro id; kept even if a file disappears
+};
+
+class ConfigStore {
+public:
+    explicit ConfigStore(std::filesystem::path file);
+
+    // Never throws. Returns defaults on any problem; `warning` describes what happened.
+    AppSettings load(std::string& warning) const;
+
+    // Atomic write (temp file + replace). Returns false with `error` on failure.
+    bool save(const AppSettings& settings, std::string& error) const;
+
+    // Ensures every loaded definition has settings; fills missing fields from defaults,
+    // drops options the definition no longer declares, clears duplicate hotkeys.
+    static void reconcile(AppSettings& settings,
+                          const std::vector<std::shared_ptr<const engine::MacroDefinition>>& defs);
+
+    const std::filesystem::path& path() const { return file_; }
+
+private:
+    std::filesystem::path file_;
+};
+
+} // namespace rms::config

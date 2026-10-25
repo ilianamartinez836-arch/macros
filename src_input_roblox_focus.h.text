@@ -1,0 +1,25 @@
+#pragma once
+// Verifies that the foreground window belongs to RobloxPlayerBeta.exe by checking
+// the owning PROCESS image name (not the window title).
+
+#include "../utilities/platform.h"
+
+namespace rms::input {
+
+class RobloxFocusChecker {
+public:
+    // Returns true when the foreground window's process is RobloxPlayerBeta.exe.
+    // Optionally returns that window. Cached per (hwnd, pid) so repeated calls are cheap.
+    bool isRobloxForeground(HWND* outWindow = nullptr);
+
+private:
+    HWND lastWindow_ = nullptr;
+    DWORD lastPid_ = 0;
+    bool lastResult_ = false;
+};
+
+// Physical size of the monitor containing `window` (requires per-monitor DPI awareness).
+// Returns false if it cannot be determined.
+bool monitorSizeForWindow(HWND window, int& width, int& height);
+
+} // namespace rms::input

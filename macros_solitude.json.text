@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "id": "solitude",
+  "order": 1,
+  "name": "SOLITUDE",
+  "accent": "#A855F7",
+  "description": "Mantiene Q, barrido a la izquierda (8 x -100) y corrección a la derecha (4 x +75).",
+  "defaultHotkey": "F2",
+  "defaultEnabled": true,
+  "options": [],
+  "actions": [
+    { "type": "keyDown", "key": "Q" },
+    { "type": "waitRandom", "min": 128, "max": 190 },
+    { "type": "repeat", "count": 8, "actions": [
+      { "type": "move", "dx": -100 },
+      { "type": "wait", "ms": 12 }
+    ]},
+    { "type": "wait", "ms": 30 },
+    { "type": "repeat", "count": 4, "actions": [
+      { "type": "move", "dx": 75 },
+      { "type": "wait", "ms": 12 }
+    ]},
+    { "type": "keyUp", "key": "Q" }
+  ]
+}

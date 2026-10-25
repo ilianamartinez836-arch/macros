@@ -1,0 +1,300 @@
+#include "macro_engine.h"
+
+#include "calibration.h"
+
+#include <algorithm>
+#include <mmsystem.h>
+
+#pragma comment(lib, "winmm.lib")
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+namespace rms::engine {
+
+const char* outcomeName(RunOutcome o) {
+    switch (o) {
+    case RunOutcome::Completed: return "Completada";
+    case RunOutcome::Cancelled: return "Cancelada";
+    case RunOutcome::FocusLost: return "Roblox perdió el foco";
+    case RunOutcome::InputError: return "Error de entrada";
+    default: return "Error interno";
+    }
+}
+
+MacroEngine::MacroEngine(input::InputController& input) : input_(input) {
+    std::random_device rd;
+    std::seed_seq seq{rd(), rd(), rd(), rd()};
+    rng_.seed(seq);
+}
+
+MacroEngine::~MacroEngine() { shutdown(); }
+
+bool MacroEngine::start(Listener listener, std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (started_) return true;
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    qpcFrequency_ = f.QuadPart > 0 ? f.QuadPart : 1;
+
+    cancelEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!cancelEvent_) { error = "No se pudo crear el evento de cancelación"; return false; }
+    timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!timer_) timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS); // pre-1803 fallback
+    if (!timer_) {
+        CloseHandle(cancelEvent_);
+        cancelEvent_ = nullptr;
+        error = "No se pudo crear el temporizador";
+        return false;
+    }
+    listener_ = std::move(listener);
+    stop_ = false;
+    try {
+        worker_ = std::thread(&MacroEngine::workerLoop, this);
+    } catch (const std::exception& ex) {
+        CloseHandle(timer_); timer_ = nullptr;
+        CloseHandle(cancelEvent_); cancelEvent_ = nullptr;
+        error = std::string("No se pudo crear el hilo del motor: ") + ex.what();
+        return false;
+    }
+    started_ = true;
+    return true;
+}
+
+void MacroEngine::shutdown() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!started_) { input_.releaseAll(); return; }
+        stop_ = true;
+        armed_ = false;
+        pending_.reset();
+        if (cancelEvent_) SetEvent(cancelEvent_);
+    }
+    cv_.notify_all();
+    if (worker_.joinable()) worker_.join();
+    input_.releaseAll();
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (timer_) { CloseHandle(timer_); timer_ = nullptr; }
+    if (cancelEvent_) { CloseHandle(cancelEvent_); cancelEvent_ = nullptr; }
+    started_ = false;
+}
+
+SubmitResult MacroEngine::submit(RunRequest request) {
+    if (!request.definition) return SubmitResult::InvalidRequest;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!started_ || stop_) return SubmitResult::NotRunning;
+        if (!armed_) return SubmitResult::Disarmed;
+        if (busy_ || pending_) return SubmitResult::Busy;
+        ResetEvent(cancelEvent_); // reset BEFORE queueing so a later cancel is never lost
+        pending_ = std::move(request);
+        busy_ = true;
+    }
+    cv_.notify_one();
+    return SubmitResult::Accepted;
+}
+
+void MacroEngine::cancel() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pending_.reset();
+    if (cancelEvent_) SetEvent(cancelEvent_);
+}
+
+void MacroEngine::setArmed(bool armed) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        armed_ = armed;
+        if (!armed) {
+            pending_.reset();
+            if (cancelEvent_) SetEvent(cancelEvent_);
+        }
+    }
+    if (!armed && !busy_) input_.releaseAll();
+}
+
+uint32_t MacroEngine::effectiveRandomMax(uint32_t minMs, uint32_t maxMs, uint32_t maxDelayMs) {
+    if (maxDelayMs == 0) return maxMs;
+    return std::clamp(maxDelayMs, minMs, maxMs);
+}
+
+void MacroEngine::workerLoop() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    for (;;) {
+        RunRequest req;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait(lock, [this] { return stop_ || pending_.has_value(); });
+            if (stop_) break;
+            req = std::move(*pending_);
+            pending_.reset();
+        }
+
+        EngineEvent startedEv;
+        startedEv.kind = EngineEvent::Kind::Started;
+        startedEv.macroId = req.definition->id;
+        if (listener_) { try { listener_(startedEv); } catch (...) {} }
+
+        std::string detail;
+        RunOutcome outcome;
+        timeBeginPeriod(1);
+        try {
+            outcome = execute(req, detail);
+        } catch (const std::exception& ex) {
+            outcome = RunOutcome::InternalError;
+            detail = ex.what();
+        } catch (...) {
+            outcome = RunOutcome::InternalError;
+            detail = "Excepción desconocida";
+        }
+        input_.releaseAll(); // safety net: nothing the program pressed survives a run
+        timeEndPeriod(1);
+
+        busy_ = false;
+        EngineEvent finishedEv;
+        finishedEv.kind = EngineEvent::Kind::Finished;
+        finishedEv.macroId = req.definition->id;
+        finishedEv.outcome = outcome;
+        finishedEv.detail = detail;
+        if (listener_) { try { listener_(finishedEv); } catch (...) {} }
+    }
+}
+
+RunOutcome MacroEngine::execute(const RunRequest& req, std::string& detail) {
+    Ctx ctx;
+    ctx.req = &req;
+    ctx.deadline = now();
+    if (!checkGate(ctx)) { detail = ctx.detail; return ctx.outcome; }
+    runList(req.definition->actions, ctx);
+    detail = ctx.detail;
+    return ctx.outcome;
+}
+
+bool MacroEngine::runList(const std::vector<Action>& actions, Ctx& ctx) {
+    for (const Action& a : actions)
+        if (!runAction(a, ctx)) return false;
+    return true;
+}
+
+bool MacroEngine::checkGate(Ctx& ctx) {
+    if (WaitForSingleObject(cancelEvent_, 0) == WAIT_OBJECT_0 || !armed_) {
+        ctx.outcome = RunOutcome::Cancelled;
+        return false;
+    }
+    if (!focus_.isRobloxForeground(nullptr)) {
+        ctx.outcome = RunOutcome::FocusLost;
+        return false;
+    }
+    return true;
+}
+
+bool MacroEngine::runAction(const Action& a, Ctx& ctx) {
+    switch (a.type) {
+    case ActionType::Wait:
+        return waitMs(a.ms, ctx);
+
+    case ActionType::WaitRandom: {
+        uint32_t hi = effectiveRandomMax(a.minMs, a.maxMs, ctx.req->maxDelayMs);
+        std::uniform_int_distribution<uint32_t> dist(a.minMs, hi); // inclusive
+        return waitMs(dist(rng_), ctx);
+    }
+
+    case ActionType::Repeat:
+        for (uint32_t i = 0; i < a.count; ++i)
+            if (!runList(a.children, ctx)) return false;
+        return true;
+
+    case ActionType::If: {
+        auto it = ctx.req->options.find(a.option);
+        bool value = false;
+        if (it != ctx.req->options.end()) value = it->second;
+        else if (const OptionDef* od = ctx.req->definition->findOption(a.option)) value = od->defaultValue;
+        if (value != a.negate) return runList(a.children, ctx);
+        return true;
+    }
+
+    default:
+        break;
+    }
+
+    // Input actions: verify cancel + Roblox focus immediately before sending anything.
+    if (!checkGate(ctx)) return false;
+
+    bool ok = true;
+    switch (a.type) {
+    case ActionType::KeyDown: ok = input_.keyDown(a.vk); break;
+    case ActionType::KeyUp: ok = input_.keyUp(a.vk); break;
+    case ActionType::MouseDown: ok = input_.mouseDown(a.button); break;
+    case ActionType::MouseUp: ok = input_.mouseUp(a.button); break;
+    case ActionType::Move: {
+        HWND fg = nullptr;
+        focus_.isRobloxForeground(&fg);
+        int width = calibration::kReferenceWidth, height = calibration::kReferenceHeight;
+        if (!input::monitorSizeForWindow(fg, width, height)) width = calibration::kReferenceWidth;
+        int dx = calibration::scaleMovement(a.dx, ctx.req->sensitivity, width);
+        int dy = calibration::scaleMovement(a.dy, ctx.req->sensitivity, width);
+        ok = input_.moveRelative(dx, dy);
+        break;
+    }
+    default: break;
+    }
+    if (!ok) {
+        ctx.outcome = RunOutcome::InputError;
+        ctx.detail = "SendInput falló (¿bloqueado por UIPI o escritorio seguro?)";
+        return false;
+    }
+    return true;
+}
+
+int64_t MacroEngine::now() const {
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
+
+int64_t MacroEngine::msToTicks(double ms) const {
+    return static_cast<int64_t>(ms * static_cast<double>(qpcFrequency_) / 1000.0);
+}
+
+bool MacroEngine::waitMs(uint32_t ms, Ctx& ctx) {
+    const int64_t t = now();
+    // If we fell far behind schedule (system stall), resync instead of bursting actions.
+    if (t - ctx.deadline > msToTicks(50.0)) ctx.deadline = t;
+    ctx.deadline += msToTicks(static_cast<double>(ms));
+    return waitUntil(ctx.deadline, ctx);
+}
+
+bool MacroEngine::waitUntil(int64_t deadline, Ctx& ctx) {
+    for (;;) {
+        if (!checkGate(ctx)) return false;
+        const int64_t remaining = deadline - now();
+        if (remaining <= 0) return true;
+        const double remainingMs = static_cast<double>(remaining) * 1000.0 / static_cast<double>(qpcFrequency_);
+        if (remainingMs > 1.5) {
+            // Sleep most of the interval, waking at least every 20 ms to re-check focus.
+            const double sleepMs = std::min(remainingMs - 1.0, 20.0);
+            LARGE_INTEGER due;
+            due.QuadPart = -static_cast<LONGLONG>(sleepMs * 10000.0); // 100 ns units, relative
+            if (SetWaitableTimer(timer_, &due, 0, nullptr, nullptr, FALSE)) {
+                HANDLE handles[2] = {cancelEvent_, timer_};
+                DWORD r = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+                if (r == WAIT_OBJECT_0) { ctx.outcome = RunOutcome::Cancelled; return false; }
+                if (r == WAIT_FAILED) {
+                    ctx.outcome = RunOutcome::InternalError;
+                    ctx.detail = "Fallo en la espera del temporizador";
+                    return false;
+                }
+            } else {
+                if (WaitForSingleObject(cancelEvent_, static_cast<DWORD>(sleepMs)) == WAIT_OBJECT_0) {
+                    ctx.outcome = RunOutcome::Cancelled;
+                    return false;
+                }
+            }
+        } else {
+            // Final <=1.5 ms: short cooperative spin for accuracy.
+            SwitchToThread();
+        }
+    }
+}
+
+} // namespace rms::engine

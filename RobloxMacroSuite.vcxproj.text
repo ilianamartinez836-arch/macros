@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{7F3C1A2B-9D4E-4B88-A6F1-2C5E8D0A4B31}</ProjectGuid>
+    <RootNamespace>RobloxMacroSuite</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>RobloxMacroSuite</ProjectName>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)build\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\int\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>RobloxMacroSuite</TargetName>
+    <!-- The manifest is embedded through app.rc; the automatic one must be off
+         so the two do not collide. -->
+    <GenerateManifest>false</GenerateManifest>
+    <EnableUAC>false</EnableUAC>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <!-- /MT: static CRT, so the .exe needs no redistributable installed. -->
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <ConformanceMode>true</ConformanceMode>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <SDLCheck>true</SDLCheck>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PreprocessorDefinitions>NDEBUG;WIN32;_WINDOWS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>user32.lib;gdi32.lib;shell32.lib;comdlg32.lib;advapi32.lib;ole32.lib;windowscodecs.lib;winmm.lib;msimg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <ConformanceMode>true</ConformanceMode>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <SDLCheck>true</SDLCheck>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PreprocessorDefinitions>_DEBUG;WIN32;_WINDOWS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>user32.lib;gdi32.lib;shell32.lib;comdlg32.lib;advapi32.lib;ole32.lib;windowscodecs.lib;winmm.lib;msimg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\app\application.cpp" />
+    <ClCompile Include="src\ui\background_image.cpp" />
+    <ClCompile Include="src\ui\main_window.cpp" />
+    <ClCompile Include="src\macro_engine\macro_engine.cpp" />
+    <ClCompile Include="src\macro_loader\macro_loader.cpp" />
+    <ClCompile Include="src\config\config_store.cpp" />
+    <ClCompile Include="src\input\keys.cpp" />
+    <ClCompile Include="src\input\input_controller.cpp" />
+    <ClCompile Include="src\input\roblox_focus.cpp" />
+    <ClCompile Include="src\utilities\json.cpp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="src\app\application.h" />
+    <ClInclude Include="src\ui\theme.h" />
+    <ClInclude Include="src\ui\background_image.h" />
+    <ClInclude Include="src\ui\main_window.h" />
+    <ClInclude Include="src\macro_engine\macro_definition.h" />
+    <ClInclude Include="src\macro_engine\calibration.h" />
+    <ClInclude Include="src\macro_engine\macro_engine.h" />
+    <ClInclude Include="src\macro_loader\macro_loader.h" />
+    <ClInclude Include="src\config\config_store.h" />
+    <ClInclude Include="src\input\keys.h" />
+    <ClInclude Include="src\input\input_controller.h" />
+    <ClInclude Include="src\input\roblox_focus.h" />
+    <ClInclude Include="src\utilities\platform.h" />
+    <ClInclude Include="src\utilities\json.h" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ResourceCompile Include="resources\app.rc" />
+    <None Include="resources\app.manifest" />
+    <None Include="macros\solitude.json" />
+    <None Include="macros\twinnie.json" />
+    <None Include="macros\bullshit_180.json" />
+    <None Include="macros\solitude_v2.json" />
+    <None Include="macros\hubmled_twisted.json" />
+    <None Include="README.md" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+
+  <!-- The macro definitions are external data: copy them next to the .exe so the
+       build output is immediately runnable. -->
+  <Target Name="CopyMacroDefinitions" AfterTargets="Build">
+    <ItemGroup>
+      <MacroFiles Include="$(ProjectDir)macros\*.json" />
+    </ItemGroup>
+    <MakeDir Directories="$(OutDir)macros" />
+    <Copy SourceFiles="@(MacroFiles)" DestinationFolder="$(OutDir)macros" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

@@ -1,0 +1,1138 @@
+#include "main_window.h"
+
+#include "../input/keys.h"
+#include "../macro_engine/calibration.h"
+#include "theme.h"
+
+#include <commdlg.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cwchar>
+
+#pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "comdlg32.lib")
+
+namespace rms::ui {
+namespace {
+
+const wchar_t* kClassName = L"RobloxMacroSuiteWindow";
+constexpr UINT_PTR kTickTimer = 1;
+
+// Widget identifiers used for hover + hit testing.
+enum WidgetId {
+    kIdNone = -1,
+    kIdDisableAll = 1,
+    kIdAlwaysOnTop,
+    kIdSensMinus,
+    kIdSensField,
+    kIdSensPlus,
+    kIdBgChoose,
+    kIdBgRemove,
+    kIdReload,
+    kIdHotkeyButton,
+    kIdEnableToggle,
+    kIdDelayMinus,
+    kIdDelayField,
+    kIdDelayPlus,
+    kIdTabBase = 1000,
+    kIdOptionBase = 2000
+};
+
+std::wstring formatSensitivity(double v) {
+    wchar_t buf[32];
+    swprintf(buf, 32, L"%.2f", v);
+    return buf;
+}
+
+std::wstring indent(int depth) { return std::wstring(static_cast<size_t>(depth) * 3, L' '); }
+
+void appendActions(const std::vector<engine::Action>& actions, int depth,
+                   std::vector<std::wstring>& out) {
+    for (const engine::Action& a : actions) {
+        const std::wstring pad = indent(depth);
+        switch (a.type) {
+        case engine::ActionType::KeyDown:
+            out.push_back(pad + L"Presionar " + platform::utf8ToWide(keys::nameFromVk(a.vk)));
+            break;
+        case engine::ActionType::KeyUp:
+            out.push_back(pad + L"Liberar " + platform::utf8ToWide(keys::nameFromVk(a.vk)));
+            break;
+        case engine::ActionType::MouseDown:
+            out.push_back(pad + L"Presionar botón " +
+                          (a.button == input::MouseButton::Left ? L"izquierdo"
+                           : a.button == input::MouseButton::Right ? L"derecho" : L"central"));
+            break;
+        case engine::ActionType::MouseUp:
+            out.push_back(pad + L"Liberar botón " +
+                          (a.button == input::MouseButton::Left ? L"izquierdo"
+                           : a.button == input::MouseButton::Right ? L"derecho" : L"central"));
+            break;
+        case engine::ActionType::Move: {
+            std::wstring line = pad + L"Mover ";
+            if (a.dx != 0) line += L"X " + std::to_wstring(a.dx);
+            if (a.dx != 0 && a.dy != 0) line += L" / ";
+            if (a.dy != 0) line += L"Y " + std::to_wstring(a.dy);
+            line += L"  (base)";
+            out.push_back(line);
+            break;
+        }
+        case engine::ActionType::Wait:
+            out.push_back(pad + L"Esperar " + std::to_wstring(a.ms) + L" ms  (fija)");
+            break;
+        case engine::ActionType::WaitRandom:
+            out.push_back(pad + L"Esperar " + std::to_wstring(a.minMs) + L"–" +
+                          std::to_wstring(a.maxMs) + L" ms  (aleatoria)");
+            break;
+        case engine::ActionType::Repeat:
+            out.push_back(pad + L"Repetir " + std::to_wstring(a.count) + L" veces:");
+            appendActions(a.children, depth + 1, out);
+            break;
+        case engine::ActionType::If:
+            out.push_back(pad + (a.negate ? L"Si NO " : L"Si ") +
+                          platform::utf8ToWide(a.option) + L":");
+            appendActions(a.children, depth + 1, out);
+            break;
+        }
+    }
+}
+
+} // namespace
+
+MainWindow::MainWindow() = default;
+
+MainWindow::~MainWindow() { destroyFonts(); }
+
+bool MainWindow::registerClass(HINSTANCE instance, std::wstring& error) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = &MainWindow::wndProcStatic;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = nullptr; // fully custom painted
+    wc.lpszClassName = kClassName;
+    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIconSm = LoadIconW(nullptr, IDI_APPLICATION);
+    if (!RegisterClassExW(&wc)) {
+        error = L"No se pudo registrar la clase de ventana (código " +
+                std::to_wstring(GetLastError()) + L").";
+        return false;
+    }
+    return true;
+}
+
+bool MainWindow::create(HINSTANCE instance, app::Application& application, std::wstring& error) {
+    instance_ = instance;
+    app_ = &application;
+
+    const config::WindowSettings& ws = app_->settings().window;
+    const int x = (ws.x == config::WindowSettings::kUseDefaultPos) ? CW_USEDEFAULT : ws.x;
+    const int y = (ws.y == config::WindowSettings::kUseDefaultPos) ? CW_USEDEFAULT : ws.y;
+
+    hwnd_ = CreateWindowExW(app_->settings().alwaysOnTop ? WS_EX_TOPMOST : 0,
+                            kClassName, L"Roblox Macro Suite",
+                            WS_OVERLAPPEDWINDOW,
+                            x, y, ws.width, ws.height,
+                            nullptr, nullptr, instance, this);
+    if (!hwnd_) {
+        error = L"No se pudo crear la ventana principal (código " +
+                std::to_wstring(GetLastError()) + L").";
+        return false;
+    }
+
+    if (!app_->settings().backgroundImage.empty()) {
+        std::string imgError;
+        if (!background_.load(app_->settings().backgroundImage, imgError)) {
+            message_ = L"Fondo no disponible: " + platform::utf8ToWide(imgError);
+            messageUntil_ = GetTickCount() + 6000;
+            app_->settings().backgroundImage.clear();
+        }
+    }
+
+    ShowWindow(hwnd_, ws.maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
+    UpdateWindow(hwnd_);
+    return true;
+}
+
+LRESULT CALLBACK MainWindow::wndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    MainWindow* self = nullptr;
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        self = static_cast<MainWindow*>(cs->lpCreateParams);
+        self->hwnd_ = hwnd;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    } else {
+        self = reinterpret_cast<MainWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+    if (self) return self->wndProc(msg, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        dpi_ = static_cast<int>(GetDpiForWindow(hwnd_));
+        if (dpi_ <= 0) dpi_ = 96;
+        createFonts();
+        SetTimer(hwnd_, kTickTimer, 250, nullptr);
+        return 0;
+    }
+
+    case WM_DPICHANGED: {
+        dpi_ = HIWORD(wParam);
+        if (dpi_ <= 0) dpi_ = 96;
+        createFonts();
+        const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+        SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left, suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        invalidate();
+        return 0;
+    }
+
+    case WM_GETMINMAXINFO: {
+        auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+        mmi->ptMinTrackSize.x = dp(820);
+        mmi->ptMinTrackSize.y = dp(560);
+        return 0;
+    }
+
+    case WM_SIZE:
+        layout();
+        invalidate();
+        return 0;
+
+    case WM_ERASEBKGND:
+        return 1; // everything is painted in WM_PAINT (double buffered)
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd_, &ps);
+        RECT client;
+        GetClientRect(hwnd_, &client);
+        const int w = client.right;
+        const int h = client.bottom;
+        HDC mem = CreateCompatibleDC(dc);
+        HBITMAP bmp = CreateCompatibleBitmap(dc, max(1, w), max(1, h));
+        HGDIOBJ oldBmp = SelectObject(mem, bmp);
+        paint(mem);
+        BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, oldBmp);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(hwnd_, &ps);
+        return 0;
+    }
+
+    case WM_MOUSEMOVE: {
+        POINT p{GET_X_LPARAM_COMPAT(lParam), GET_Y_LPARAM_COMPAT(lParam)};
+        onMouseMove(p);
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+        hotId_ = kIdNone;
+        invalidate();
+        return 0;
+
+    case WM_LBUTTONDOWN: {
+        SetFocus(hwnd_);
+        POINT p{GET_X_LPARAM_COMPAT(lParam), GET_Y_LPARAM_COMPAT(lParam)};
+        onLeftDown(p);
+        return 0;
+    }
+
+    case WM_MOUSEWHEEL:
+        onMouseWheel(GET_WHEEL_DELTA_WPARAM(wParam));
+        return 0;
+
+    case WM_KEYDOWN:
+        onKeyDown(wParam);
+        return 0;
+
+    case WM_CHAR:
+        onChar(static_cast<wchar_t>(wParam));
+        return 0;
+
+    case WM_HOTKEY:
+        onHotkey(static_cast<int>(wParam));
+        return 0;
+
+    case app::WM_RMS_ENGINE_EVENT:
+        onEngineEvent(reinterpret_cast<engine::EngineEvent*>(lParam));
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == kTickTimer) onCommandTick();
+        return 0;
+
+    case WM_MOVE:
+        rememberWindowPlacement();
+        return 0;
+
+    case WM_CLOSE:
+        rememberWindowPlacement();
+        persist();
+        DestroyWindow(hwnd_);
+        return 0;
+
+    case WM_DESTROY:
+        KillTimer(hwnd_, kTickTimer);
+        PostQuitMessage(0);
+        return 0;
+
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd_, msg, wParam, lParam);
+}
+
+// GET_X_LPARAM lives in windowsx.h; define locally to keep includes minimal.
+#ifndef GET_X_LPARAM_COMPAT_DEFINED
+#define GET_X_LPARAM_COMPAT_DEFINED
+#endif
+
+void MainWindow::createFonts() {
+    destroyFonts();
+    auto make = [this](int pt, int weight) {
+        return CreateFontW(-MulDiv(pt, dpi_, 72), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI");
+    };
+    fontTitle_ = make(16, FW_BOLD);
+    fontHeading_ = make(12, FW_SEMIBOLD);
+    fontBody_ = make(10, FW_NORMAL);
+    fontSmall_ = make(8, FW_NORMAL);
+    fontMono_ = CreateFontW(-MulDiv(9, dpi_, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+}
+
+void MainWindow::destroyFonts() {
+    HFONT* fonts[] = {&fontTitle_, &fontHeading_, &fontBody_, &fontSmall_, &fontMono_};
+    for (HFONT* f : fonts) {
+        if (*f) { DeleteObject(*f); *f = nullptr; }
+    }
+}
+
+void MainWindow::invalidate() {
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::layout() {
+    if (!hwnd_ || !app_) return;
+    GetClientRect(hwnd_, &rcClient_);
+    const int pad = dp(14);
+    const int headerH = dp(104);
+    const int statusH = dp(30);
+
+    rcHeader_ = theme::makeRect(pad, pad, rcClient_.right - 2 * pad, headerH);
+    rcStatus_ = RECT{0, rcClient_.bottom - statusH, rcClient_.right, rcClient_.bottom};
+
+    // --- Header row 1: title + global controls ---
+    const int inner = dp(12);
+    const int btnH = dp(30);
+    int topRowY = rcHeader_.top + inner;
+    rcTitle_ = theme::makeRect(rcHeader_.left + inner, topRowY, dp(360), btnH);
+
+    const int disableW = dp(150);
+    rcDisableAll_ = theme::makeRect(rcHeader_.right - inner - disableW, topRowY, disableW, btnH);
+    const int aotW = dp(150);
+    rcAlwaysOnTop_ = theme::makeRect(rcDisableAll_.left - dp(10) - aotW, topRowY, aotW, btnH);
+
+    // --- Header row 2: sensitivity + background + reload ---
+    const int row2Y = topRowY + btnH + dp(12);
+    const int smallBtn = dp(30);
+    int x = rcHeader_.left + inner + dp(110); // label "Sensibilidad" drawn before it
+    rcSensMinus_ = theme::makeRect(x, row2Y, smallBtn, btnH);
+    rcSensField_ = theme::makeRect(rcSensMinus_.right + dp(4), row2Y, dp(76), btnH);
+    rcSensPlus_ = theme::makeRect(rcSensField_.right + dp(4), row2Y, smallBtn, btnH);
+
+    const int reloadW = dp(118);
+    rcReload_ = theme::makeRect(rcHeader_.right - inner - reloadW, row2Y, reloadW, btnH);
+    const int bgRemoveW = dp(104);
+    rcBgRemove_ = theme::makeRect(rcReload_.left - dp(10) - bgRemoveW, row2Y, bgRemoveW, btnH);
+    const int bgChooseW = dp(134);
+    rcBgChoose_ = theme::makeRect(rcBgRemove_.left - dp(10) - bgChooseW, row2Y, bgChooseW, btnH);
+
+    // --- Tab strip (wraps into rows; never scrolls) ---
+    const int tabY = rcHeader_.bottom + dp(12);
+    const int tabH = dp(34);
+    const int tabGap = dp(8);
+    rcTabs_.clear();
+    HDC dc = GetDC(hwnd_);
+    int cursorX = pad;
+    int cursorY = tabY;
+    const int maxRight = rcClient_.right - pad;
+    for (const auto& def : app_->macros()) {
+        const std::wstring label = platform::utf8ToWide(def->name);
+        SIZE sz = theme::measure(dc, label, fontBody_);
+        const int tabW = sz.cx + dp(34);
+        if (cursorX + tabW > maxRight && cursorX > pad) {
+            cursorX = pad;
+            cursorY += tabH + tabGap;
+        }
+        rcTabs_.push_back(theme::makeRect(cursorX, cursorY, tabW, tabH));
+        cursorX += tabW + tabGap;
+    }
+    ReleaseDC(hwnd_, dc);
+    rcTabStrip_ = RECT{pad, tabY, rcClient_.right - pad, cursorY + tabH};
+    if (rcTabs_.empty()) rcTabStrip_.bottom = tabY;
+
+    // --- Macro panel ---
+    rcPanel_ = RECT{pad, rcTabStrip_.bottom + dp(12), rcClient_.right - pad, rcStatus_.top - dp(12)};
+
+    const int px = rcPanel_.left + dp(18);
+    const int controlsY = rcPanel_.top + dp(96);
+    const int ctrlH = dp(32);
+
+    rcHotkeyButton_ = theme::makeRect(px + dp(80), controlsY, dp(140), ctrlH);
+    rcEnableToggle_ = theme::makeRect(rcHotkeyButton_.right + dp(42), controlsY + dp(3), dp(58), dp(26));
+
+    const int delayX = rcEnableToggle_.right + dp(110);
+    rcDelayMinus_ = theme::makeRect(delayX, controlsY, smallBtn, ctrlH);
+    rcDelayField_ = theme::makeRect(rcDelayMinus_.right + dp(4), controlsY, dp(84), ctrlH);
+    rcDelayPlus_ = theme::makeRect(rcDelayField_.right + dp(4), controlsY, smallBtn, ctrlH);
+
+    rcOptions_.clear();
+    const engine::MacroDefinition* def = currentMacro();
+    int optY = controlsY + ctrlH + dp(16);
+    if (def) {
+        for (size_t i = 0; i < def->options.size(); ++i) {
+            rcOptions_.push_back(theme::makeRect(px, optY, dp(58), dp(26)));
+            optY += dp(34);
+        }
+    }
+
+    rcSequence_ = RECT{px, optY + dp(10), rcPanel_.right - dp(18), rcPanel_.bottom - dp(14)};
+    if (rcSequence_.bottom < rcSequence_.top) rcSequence_.bottom = rcSequence_.top;
+}
+
+const engine::MacroDefinition* MainWindow::currentMacro() const {
+    if (!app_) return nullptr;
+    const auto& list = app_->macros();
+    if (activeTab_ >= list.size()) return nullptr;
+    return list[activeTab_].get();
+}
+
+config::MacroSettings* MainWindow::currentSettings() {
+    const engine::MacroDefinition* def = currentMacro();
+    if (!def) return nullptr;
+    return &app_->settingsFor(def->id);
+}
+
+COLORREF MainWindow::currentAccent() const {
+    const engine::MacroDefinition* def = currentMacro();
+    return def ? theme::fromRgb24(def->accentRgb) : theme::kAccentDefault;
+}
+
+std::vector<std::wstring> MainWindow::buildSequenceLines(const engine::MacroDefinition& def) const {
+    std::vector<std::wstring> lines;
+    appendActions(def.actions, 0, lines);
+    return lines;
+}
+
+// ---------------------------------------------------------------- painting
+
+void MainWindow::paint(HDC dc) {
+    if (rcClient_.right == 0) layout();
+
+    if (!background_.draw(dc, rcClient_))
+        theme::fillRect(dc, rcClient_, theme::kBackground);
+
+    paintHeader(dc);
+    paintTabs(dc);
+    paintMacroPanel(dc);
+    paintStatusBar(dc);
+}
+
+void MainWindow::paintButton(HDC dc, const RECT& r, const std::wstring& label, bool hot,
+                             COLORREF fill, COLORREF border, COLORREF textColor, HFONT font) const {
+    theme::roundRect(dc, r, dp(8), hot ? theme::mix(fill, RGB(255, 255, 255), 0.10) : fill, border);
+    theme::text(dc, r, label, font, textColor, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+void MainWindow::paintToggle(HDC dc, const RECT& r, bool on, COLORREF accent, bool hot) const {
+    const int h = r.bottom - r.top;
+    const COLORREF track = on ? theme::mix(accent, theme::kPanel, 0.35) : theme::kPanelAlt;
+    theme::roundRect(dc, r, h, hot ? theme::mix(track, RGB(255, 255, 255), 0.12) : track,
+                     on ? accent : theme::kBorder);
+    const int knob = h - dp(6);
+    const int kx = on ? (r.right - dp(3) - knob) : (r.left + dp(3));
+    RECT knobRect = theme::makeRect(kx, r.top + dp(3), knob, knob);
+    theme::roundRect(dc, knobRect, knob, on ? RGB(255, 255, 255) : theme::kTextDim,
+                     on ? RGB(255, 255, 255) : theme::kTextDim);
+}
+
+void MainWindow::paintNumberField(HDC dc, const RECT& r, const std::wstring& value,
+                                  bool focused, bool hot) const {
+    const COLORREF border = focused ? theme::kAccentDefault : (hot ? theme::kBorderStrong : theme::kBorder);
+    theme::roundRect(dc, r, dp(8), theme::kPanelAlt, border);
+    std::wstring shown = value;
+    if (focused) shown += L"|";
+    theme::text(dc, r, shown, fontBody_, theme::kText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+void MainWindow::paintHeader(HDC dc) {
+    theme::panel(dc, rcHeader_, theme::kPanel, theme::kPanelAlpha, theme::kBorder, dp(10));
+
+    theme::text(dc, rcTitle_, L"ROBLOX MACRO SUITE", fontTitle_, theme::kText,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    const bool armed = app_->globalEnabled();
+    paintButton(dc, rcDisableAll_, armed ? L"DISABLE ALL" : L"ENABLE ALL",
+                hotId_ == kIdDisableAll,
+                armed ? theme::kDangerDark : theme::mix(theme::kSuccess, theme::kPanel, 0.65),
+                armed ? theme::kDanger : theme::kSuccess,
+                armed ? theme::kDanger : theme::kSuccess, fontHeading_);
+
+    const bool aot = app_->settings().alwaysOnTop;
+    paintButton(dc, rcAlwaysOnTop_, aot ? L"Always on Top: ON" : L"Always on Top: OFF",
+                hotId_ == kIdAlwaysOnTop, theme::kPanelAlt, theme::kBorder,
+                aot ? theme::kSuccess : theme::kTextDim, fontSmall_);
+
+    RECT sensLabel = theme::makeRect(rcHeader_.left + dp(12), rcSensMinus_.top, dp(104),
+                                     rcSensMinus_.bottom - rcSensMinus_.top);
+    theme::text(dc, sensLabel, L"Sensibilidad", fontBody_, theme::kTextDim,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    paintButton(dc, rcSensMinus_, L"−", hotId_ == kIdSensMinus, theme::kPanelAlt,
+                theme::kBorder, theme::kText, fontBody_);
+    paintNumberField(dc, rcSensField_,
+                     editing_ == Field::Sensitivity ? editBuffer_
+                                                    : formatSensitivity(app_->settings().sensitivity),
+                     editing_ == Field::Sensitivity, hotId_ == kIdSensField);
+    paintButton(dc, rcSensPlus_, L"+", hotId_ == kIdSensPlus, theme::kPanelAlt,
+                theme::kBorder, theme::kText, fontBody_);
+
+    paintButton(dc, rcBgChoose_, L"Imagen de fondo…", hotId_ == kIdBgChoose, theme::kPanelAlt,
+                theme::kBorder, theme::kText, fontSmall_);
+    paintButton(dc, rcBgRemove_, L"Quitar fondo", hotId_ == kIdBgRemove, theme::kPanelAlt,
+                theme::kBorder, background_.valid() ? theme::kText : theme::kTextFaint, fontSmall_);
+    paintButton(dc, rcReload_, L"Recargar macros", hotId_ == kIdReload, theme::kPanelAlt,
+                theme::kBorder, theme::kText, fontSmall_);
+
+    if (!message_.empty() && GetTickCount() < messageUntil_) {
+        RECT msgRect = RECT{rcSensPlus_.right + dp(16), rcSensPlus_.top,
+                            rcBgChoose_.left - dp(12), rcSensPlus_.bottom};
+        if (msgRect.right > msgRect.left)
+            theme::text(dc, msgRect, message_, fontSmall_, theme::kWarning,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+}
+
+void MainWindow::paintTabs(HDC dc) {
+    const auto& macros = app_->macros();
+    for (size_t i = 0; i < rcTabs_.size() && i < macros.size(); ++i) {
+        const RECT& r = rcTabs_[i];
+        const COLORREF accent = theme::fromRgb24(macros[i]->accentRgb);
+        const bool active = (i == activeTab_);
+        const bool hot = (hotId_ == static_cast<int>(kIdTabBase + i));
+        const config::MacroSettings& ms = app_->settingsFor(macros[i]->id);
+
+        COLORREF fill = active ? theme::mix(theme::kPanel, accent, 0.26)
+                               : (hot ? theme::kPanelHot : theme::kPanelAlt);
+        theme::panel(dc, r, fill, theme::kPanelAlpha, active ? accent : theme::kBorder, dp(8));
+
+        RECT dot = theme::makeRect(r.left + dp(11), (r.top + r.bottom) / 2 - dp(4), dp(8), dp(8));
+        const COLORREF dotColor = !ms.enabled || !app_->globalEnabled() ? theme::kTextFaint : accent;
+        theme::roundRect(dc, dot, dp(8), dotColor, dotColor);
+
+        RECT label = r;
+        label.left += dp(26);
+        theme::text(dc, label, platform::utf8ToWide(macros[i]->name), fontBody_,
+                    active ? theme::kText : theme::kTextDim,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+}
+
+void MainWindow::paintMacroPanel(HDC dc) {
+    theme::panel(dc, rcPanel_, theme::kPanel, theme::kPanelAlpha, theme::kBorder, dp(10));
+
+    const engine::MacroDefinition* def = currentMacro();
+    if (!def) {
+        RECT box = rcPanel_;
+        box.top += dp(40);
+        std::wstring msg = L"No hay macros cargadas.\n\nCopia archivos .json en la carpeta «macros»\n"
+                           L"junto al ejecutable y pulsa «Recargar macros».";
+        if (!app_->loadErrors().empty()) {
+            msg += L"\n\nErrores detectados:";
+            int shown = 0;
+            for (const auto& e : app_->loadErrors()) {
+                if (shown++ >= 6) break;
+                msg += L"\n  • " + e.file + L": " + platform::utf8ToWide(e.message);
+            }
+        }
+        theme::text(dc, box, msg, fontBody_, theme::kTextDim, DT_CENTER | DT_WORDBREAK);
+        return;
+    }
+
+    const COLORREF accent = currentAccent();
+    config::MacroSettings& ms = app_->settingsFor(def->id);
+
+    // Accent stripe along the left edge of the panel.
+    RECT stripe = theme::makeRect(rcPanel_.left + dp(3), rcPanel_.top + dp(14), dp(4),
+                                  rcPanel_.bottom - rcPanel_.top - dp(28));
+    theme::roundRect(dc, stripe, dp(4), accent, accent);
+
+    const int px = rcPanel_.left + dp(18);
+    RECT nameRect = RECT{px, rcPanel_.top + dp(16), rcPanel_.right - dp(18), rcPanel_.top + dp(46)};
+    theme::text(dc, nameRect, platform::utf8ToWide(def->name), fontTitle_, accent,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    RECT descRect = RECT{px, nameRect.bottom, rcPanel_.right - dp(18), nameRect.bottom + dp(40)};
+    theme::text(dc, descRect, platform::utf8ToWide(def->description), fontSmall_, theme::kTextDim,
+                DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+    // Hotkey
+    RECT hkLabel = theme::makeRect(px, rcHotkeyButton_.top, dp(76),
+                                   rcHotkeyButton_.bottom - rcHotkeyButton_.top);
+    theme::text(dc, hkLabel, L"Hotkey", fontBody_, theme::kTextDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    std::wstring hkText;
+    if (capturingHotkey_) hkText = L"Pulsa una tecla… (Esc)";
+    else if (ms.hotkeyVk == 0) hkText = L"Sin asignar";
+    else hkText = platform::utf8ToWide(keys::nameFromVk(ms.hotkeyVk));
+    paintButton(dc, rcHotkeyButton_, hkText, hotId_ == kIdHotkeyButton,
+                capturingHotkey_ ? theme::mix(theme::kPanelAlt, accent, 0.35) : theme::kPanelAlt,
+                capturingHotkey_ ? accent : theme::kBorder, theme::kText, fontBody_);
+
+    // Enable / disable
+    RECT enLabel = theme::makeRect(rcEnableToggle_.right + dp(10), rcEnableToggle_.top, dp(90),
+                                   rcEnableToggle_.bottom - rcEnableToggle_.top);
+    paintToggle(dc, rcEnableToggle_, ms.enabled, accent, hotId_ == kIdEnableToggle);
+    theme::text(dc, enLabel, ms.enabled ? L"Habilitada" : L"Deshabilitada", fontBody_,
+                ms.enabled ? theme::kText : theme::kTextFaint, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    // Max Delay
+    RECT mdLabel = theme::makeRect(rcDelayMinus_.left - dp(104), rcDelayMinus_.top, dp(100),
+                                   rcDelayMinus_.bottom - rcDelayMinus_.top);
+    theme::text(dc, mdLabel, L"Max Delay", fontBody_, theme::kTextDim,
+                DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    paintButton(dc, rcDelayMinus_, L"−", hotId_ == kIdDelayMinus, theme::kPanelAlt,
+                theme::kBorder, theme::kText, fontBody_);
+    paintNumberField(dc, rcDelayField_,
+                     editing_ == Field::MaxDelay ? editBuffer_
+                     : (ms.maxDelayMs == 0 ? std::wstring(L"OFF") : std::to_wstring(ms.maxDelayMs)),
+                     editing_ == Field::MaxDelay, hotId_ == kIdDelayField);
+    paintButton(dc, rcDelayPlus_, L"+", hotId_ == kIdDelayPlus, theme::kPanelAlt,
+                theme::kBorder, theme::kText, fontBody_);
+    RECT mdHint = theme::makeRect(rcDelayPlus_.right + dp(10), rcDelayPlus_.top, dp(300),
+                                  rcDelayPlus_.bottom - rcDelayPlus_.top);
+    theme::text(dc, mdHint, L"ms · 0 = desactivado · solo limita esperas aleatorias",
+                fontSmall_, theme::kTextFaint, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    // Options
+    for (size_t i = 0; i < rcOptions_.size() && i < def->options.size(); ++i) {
+        auto it = ms.options.find(def->options[i].id);
+        const bool on = (it != ms.options.end()) ? it->second : def->options[i].defaultValue;
+        paintToggle(dc, rcOptions_[i], on, accent, hotId_ == static_cast<int>(kIdOptionBase + i));
+        RECT label = theme::makeRect(rcOptions_[i].right + dp(10), rcOptions_[i].top, dp(320),
+                                     rcOptions_[i].bottom - rcOptions_[i].top);
+        theme::text(dc, label, platform::utf8ToWide(def->options[i].label), fontBody_,
+                    on ? theme::kText : theme::kTextFaint, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    paintSequence(dc, rcSequence_);
+}
+
+void MainWindow::paintSequence(HDC dc, const RECT& area) {
+    if (area.bottom - area.top < dp(40)) return;
+    const engine::MacroDefinition* def = currentMacro();
+    if (!def) return;
+
+    theme::panel(dc, area, theme::kBackground, 180, theme::kBorder, dp(8));
+
+    RECT header = theme::makeRect(area.left + dp(12), area.top + dp(6), area.right - area.left - dp(24), dp(20));
+    const std::wstring caption =
+        L"SECUENCIA · " + std::to_wstring(def->expandedActionCount) + L" acciones · hasta " +
+        std::to_wstring(def->worstCaseDurationMs) + L" ms";
+    theme::text(dc, header, caption, fontSmall_, theme::kTextFaint, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    const std::vector<std::wstring> lines = buildSequenceLines(*def);
+    const int lineH = dp(17);
+    sequenceContentHeight_ = static_cast<int>(lines.size()) * lineH;
+
+    RECT viewport = RECT{area.left + dp(12), header.bottom + dp(4), area.right - dp(12), area.bottom - dp(8)};
+    const int viewH = viewport.bottom - viewport.top;
+    if (viewH <= 0) return;
+
+    const int maxScroll = max(0, sequenceContentHeight_ - viewH);
+    if (sequenceScroll_ > maxScroll) sequenceScroll_ = maxScroll;
+    if (sequenceScroll_ < 0) sequenceScroll_ = 0;
+
+    HRGN clip = CreateRectRgn(viewport.left, viewport.top, viewport.right, viewport.bottom);
+    SelectClipRgn(dc, clip);
+
+    int y = viewport.top - sequenceScroll_;
+    for (const std::wstring& line : lines) {
+        if (y + lineH >= viewport.top && y <= viewport.bottom) {
+            RECT lr = RECT{viewport.left, y, viewport.right - dp(10), y + lineH};
+            theme::text(dc, lr, line, fontMono_, theme::kTextDim,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+        y += lineH;
+    }
+
+    SelectClipRgn(dc, nullptr);
+    DeleteObject(clip);
+
+    if (maxScroll > 0) {
+        const int barH = max(dp(24), viewH * viewH / max(1, sequenceContentHeight_));
+        const int barY = viewport.top + (viewH - barH) * sequenceScroll_ / maxScroll;
+        RECT bar = theme::makeRect(viewport.right - dp(6), barY, dp(4), barH);
+        theme::roundRect(dc, bar, dp(4), theme::kBorderStrong, theme::kBorderStrong);
+    }
+}
+
+void MainWindow::paintStatusBar(HDC dc) {
+    theme::fillRect(dc, rcStatus_, theme::kPanel);
+    RECT line = rcStatus_;
+    line.bottom = line.top + 1;
+    theme::fillRect(dc, line, theme::kBorder);
+
+    RECT textRect = rcStatus_;
+    textRect.left += dp(14);
+    textRect.right -= dp(14);
+    const bool armed = app_->globalEnabled();
+    theme::text(dc, textRect, statusLine(), fontSmall_,
+                armed ? theme::kTextDim : theme::kDanger,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+std::wstring MainWindow::statusLine() const {
+    size_t enabled = 0;
+    for (const auto& def : app_->macros())
+        if (app_->settingsFor(def->id).enabled) ++enabled;
+
+    app::MonitorInfoSnapshot mon = const_cast<app::Application*>(app_)->currentMonitor();
+
+    std::wstring s;
+    s += L"Macros: " + std::to_wstring(app_->macros().size());
+    s += L"  ·  Habilitadas: " + std::to_wstring(enabled);
+    s += L"  ·  Motor: ";
+    if (!app_->globalEnabled()) s += L"DESHABILITADO";
+    else if (!runningMacro_.empty()) s += L"EJECUTANDO " + runningMacro_;
+    else s += L"en espera";
+    s += L"  ·  Monitor: " + std::to_wstring(mon.width) + L"×" + std::to_wstring(mon.height);
+    s += mon.fromRoblox ? L" (Roblox)" : L" (principal)";
+    s += L"  ·  Sens: " + formatSensitivity(app_->settings().sensitivity);
+    if (!lastOutcome_.empty()) s += L"  ·  Última: " + lastOutcome_;
+    if (!app_->loadErrors().empty())
+        s += L"  ·  " + std::to_wstring(app_->loadErrors().size()) + L" archivo(s) con errores";
+    return s;
+}
+
+// ------------------------------------------------------------- interaction
+
+void MainWindow::onMouseMove(POINT p) {
+    TRACKMOUSEEVENT tme{};
+    tme.cbSize = sizeof(tme);
+    tme.dwFlags = TME_LEAVE;
+    tme.hwndTrack = hwnd_;
+    TrackMouseEvent(&tme);
+
+    int id = kIdNone;
+    if (theme::hit(rcDisableAll_, p)) id = kIdDisableAll;
+    else if (theme::hit(rcAlwaysOnTop_, p)) id = kIdAlwaysOnTop;
+    else if (theme::hit(rcSensMinus_, p)) id = kIdSensMinus;
+    else if (theme::hit(rcSensField_, p)) id = kIdSensField;
+    else if (theme::hit(rcSensPlus_, p)) id = kIdSensPlus;
+    else if (theme::hit(rcBgChoose_, p)) id = kIdBgChoose;
+    else if (theme::hit(rcBgRemove_, p)) id = kIdBgRemove;
+    else if (theme::hit(rcReload_, p)) id = kIdReload;
+    else if (theme::hit(rcHotkeyButton_, p)) id = kIdHotkeyButton;
+    else if (theme::hit(rcEnableToggle_, p)) id = kIdEnableToggle;
+    else if (theme::hit(rcDelayMinus_, p)) id = kIdDelayMinus;
+    else if (theme::hit(rcDelayField_, p)) id = kIdDelayField;
+    else if (theme::hit(rcDelayPlus_, p)) id = kIdDelayPlus;
+    else {
+        for (size_t i = 0; i < rcTabs_.size(); ++i)
+            if (theme::hit(rcTabs_[i], p)) { id = static_cast<int>(kIdTabBase + i); break; }
+        if (id == kIdNone)
+            for (size_t i = 0; i < rcOptions_.size(); ++i)
+                if (theme::hit(rcOptions_[i], p)) { id = static_cast<int>(kIdOptionBase + i); break; }
+    }
+
+    if (id != hotId_) {
+        hotId_ = id;
+        SetCursor(LoadCursorW(nullptr, id == kIdNone ? IDC_ARROW : IDC_HAND));
+        invalidate();
+    }
+}
+
+void MainWindow::onLeftDown(POINT p) {
+    // Clicking outside an active numeric field commits it first.
+    if (editing_ == Field::Sensitivity && !theme::hit(rcSensField_, p)) commitEditing();
+    else if (editing_ == Field::MaxDelay && !theme::hit(rcDelayField_, p)) commitEditing();
+
+    if (capturingHotkey_ && !theme::hit(rcHotkeyButton_, p)) cancelHotkeyCapture();
+
+    if (theme::hit(rcDisableAll_, p)) { toggleGlobalEnabled(); return; }
+    if (theme::hit(rcAlwaysOnTop_, p)) { toggleAlwaysOnTop(); return; }
+    if (theme::hit(rcSensMinus_, p)) { adjustSensitivity(-0.01); return; }
+    if (theme::hit(rcSensPlus_, p)) { adjustSensitivity(0.01); return; }
+    if (theme::hit(rcSensField_, p)) {
+        editing_ = Field::Sensitivity;
+        editBuffer_ = formatSensitivity(app_->settings().sensitivity);
+        invalidate();
+        return;
+    }
+    if (theme::hit(rcBgChoose_, p)) { chooseBackground(); return; }
+    if (theme::hit(rcBgRemove_, p)) { removeBackground(); return; }
+    if (theme::hit(rcReload_, p)) { doReload(); return; }
+
+    for (size_t i = 0; i < rcTabs_.size(); ++i) {
+        if (theme::hit(rcTabs_[i], p)) {
+            if (activeTab_ != i) {
+                activeTab_ = i;
+                sequenceScroll_ = 0;
+                cancelHotkeyCapture();
+                layout();
+                invalidate();
+            }
+            return;
+        }
+    }
+
+    if (!currentMacro()) return;
+
+    if (theme::hit(rcHotkeyButton_, p)) {
+        if (capturingHotkey_) cancelHotkeyCapture();
+        else beginHotkeyCapture();
+        return;
+    }
+    if (theme::hit(rcEnableToggle_, p)) { toggleEnabled(); return; }
+    if (theme::hit(rcDelayMinus_, p)) { adjustMaxDelay(-50); return; }
+    if (theme::hit(rcDelayPlus_, p)) { adjustMaxDelay(50); return; }
+    if (theme::hit(rcDelayField_, p)) {
+        config::MacroSettings* ms = currentSettings();
+        editing_ = Field::MaxDelay;
+        editBuffer_ = ms ? std::to_wstring(ms->maxDelayMs) : L"0";
+        invalidate();
+        return;
+    }
+    for (size_t i = 0; i < rcOptions_.size(); ++i) {
+        if (theme::hit(rcOptions_[i], p)) { toggleOption(i); return; }
+    }
+}
+
+void MainWindow::onMouseWheel(int delta) {
+    POINT cursor;
+    GetCursorPos(&cursor);
+    ScreenToClient(hwnd_, &cursor);
+    if (!theme::hit(rcSequence_, cursor)) return;
+    sequenceScroll_ -= (delta / WHEEL_DELTA) * dp(34);
+    if (sequenceScroll_ < 0) sequenceScroll_ = 0;
+    invalidate();
+}
+
+void MainWindow::onKeyDown(WPARAM vk) {
+    if (capturingHotkey_) {
+        if (vk == VK_ESCAPE) { cancelHotkeyCapture(); return; }
+        if (vk == VK_DELETE || vk == VK_BACK) { assignHotkey(0); return; }
+        const uint16_t code = static_cast<uint16_t>(vk);
+        if (keys::isValidHotkeyVk(code)) {
+            assignHotkey(code);
+        } else {
+            message_ = L"Esa tecla no puede usarse como hotkey.";
+            messageUntil_ = GetTickCount() + 4000;
+            invalidate();
+        }
+        return;
+    }
+
+    if (editing_ != Field::None) {
+        if (vk == VK_RETURN) { commitEditing(); return; }
+        if (vk == VK_ESCAPE) { editing_ = Field::None; editBuffer_.clear(); invalidate(); return; }
+        if (vk == VK_BACK) {
+            if (!editBuffer_.empty()) editBuffer_.pop_back();
+            invalidate();
+            return;
+        }
+    }
+
+    if (vk == VK_TAB && !app_->macros().empty()) {
+        activeTab_ = (activeTab_ + 1) % app_->macros().size();
+        sequenceScroll_ = 0;
+        layout();
+        invalidate();
+    }
+}
+
+void MainWindow::onChar(wchar_t ch) {
+    if (editing_ == Field::None || capturingHotkey_) return;
+    const bool digit = (ch >= L'0' && ch <= L'9');
+    const bool dot = (ch == L'.' || ch == L',');
+    if (editing_ == Field::Sensitivity && (digit || dot)) {
+        if (dot && editBuffer_.find(L'.') != std::wstring::npos) return;
+        if (editBuffer_.size() < 8) editBuffer_.push_back(dot ? L'.' : ch);
+        invalidate();
+    } else if (editing_ == Field::MaxDelay && digit) {
+        if (editBuffer_.size() < 6) editBuffer_.push_back(ch);
+        invalidate();
+    }
+}
+
+void MainWindow::onHotkey(int id) {
+    const int index = app_->macroIndexForHotkeyId(id);
+    if (index < 0) return;
+    const engine::SubmitResult r = app_->trigger(static_cast<size_t>(index));
+    const auto& def = app_->macros()[static_cast<size_t>(index)];
+    switch (r) {
+    case engine::SubmitResult::Accepted:
+        break;
+    case engine::SubmitResult::Busy:
+        message_ = L"Ya hay una macro en ejecución.";
+        messageUntil_ = GetTickCount() + 2500;
+        invalidate();
+        break;
+    case engine::SubmitResult::Disarmed:
+        message_ = platform::utf8ToWide(def->name) + L": deshabilitada.";
+        messageUntil_ = GetTickCount() + 2500;
+        invalidate();
+        break;
+    case engine::SubmitResult::NotRunning:
+    case engine::SubmitResult::InvalidRequest:
+        message_ = L"El motor no está disponible.";
+        messageUntil_ = GetTickCount() + 3000;
+        invalidate();
+        break;
+    }
+}
+
+void MainWindow::onEngineEvent(engine::EngineEvent* ev) {
+    if (!ev) return;
+    std::wstring name = platform::utf8ToWide(ev->macroId);
+    for (const auto& def : app_->macros())
+        if (def->id == ev->macroId) { name = platform::utf8ToWide(def->name); break; }
+
+    if (ev->kind == engine::EngineEvent::Kind::Started) {
+        runningMacro_ = name;
+    } else {
+        runningMacro_.clear();
+        lastOutcome_ = name + L" — " + platform::utf8ToWide(engine::outcomeName(ev->outcome));
+        if (!ev->detail.empty()) {
+            message_ = lastOutcome_ + L": " + platform::utf8ToWide(ev->detail);
+            messageUntil_ = GetTickCount() + 6000;
+        }
+    }
+    delete ev;
+    invalidate();
+}
+
+void MainWindow::onCommandTick() {
+    // Keeps the status bar (engine state, monitor, running macro) and transient
+    // messages fresh without any busy loop.
+    if (!message_.empty() && GetTickCount() >= messageUntil_) message_.clear();
+    invalidate();
+}
+
+// ----------------------------------------------------------------- actions
+
+void MainWindow::beginHotkeyCapture() {
+    capturingHotkey_ = true;
+    app_->unregisterHotkeys(); // so the picker can read keys that are currently bound
+    message_ = L"Pulsa la tecla que quieres asignar (Esc cancela, Supr borra).";
+    messageUntil_ = GetTickCount() + 10000;
+    invalidate();
+}
+
+void MainWindow::cancelHotkeyCapture() {
+    if (!capturingHotkey_) return;
+    capturingHotkey_ = false;
+    app_->registerHotkeys();
+    invalidate();
+}
+
+void MainWindow::assignHotkey(uint16_t vk) {
+    config::MacroSettings* ms = currentSettings();
+    const engine::MacroDefinition* def = currentMacro();
+    if (!ms || !def) { cancelHotkeyCapture(); return; }
+
+    if (vk != 0) {
+        for (const auto& other : app_->macros()) {
+            if (other->id == def->id) continue;
+            if (app_->settingsFor(other->id).hotkeyVk == vk) {
+                message_ = L"Esa tecla ya está asignada a " + platform::utf8ToWide(other->name) + L".";
+                messageUntil_ = GetTickCount() + 5000;
+                invalidate();
+                return;
+            }
+        }
+    }
+    ms->hotkeyVk = vk;
+    capturingHotkey_ = false;
+    app_->registerHotkeys();
+    persist();
+    message_ = vk == 0 ? L"Hotkey eliminada." : L"Hotkey asignada.";
+    messageUntil_ = GetTickCount() + 3000;
+    invalidate();
+}
+
+void MainWindow::toggleEnabled() {
+    config::MacroSettings* ms = currentSettings();
+    if (!ms) return;
+    ms->enabled = !ms->enabled;
+    persist();
+    invalidate();
+}
+
+void MainWindow::toggleOption(size_t optionIndex) {
+    const engine::MacroDefinition* def = currentMacro();
+    config::MacroSettings* ms = currentSettings();
+    if (!def || !ms || optionIndex >= def->options.size()) return;
+    const std::string& id = def->options[optionIndex].id;
+    auto it = ms->options.find(id);
+    const bool current = (it != ms->options.end()) ? it->second : def->options[optionIndex].defaultValue;
+    ms->options[id] = !current;
+    persist();
+    invalidate();
+}
+
+void MainWindow::adjustSensitivity(double delta) {
+    double v = app_->settings().sensitivity + delta;
+    v = std::round(v * 100.0) / 100.0;
+    if (!calibration::isValidSensitivity(v)) return;
+    app_->settings().sensitivity = v;
+    persist();
+    invalidate();
+}
+
+void MainWindow::adjustMaxDelay(int deltaMs) {
+    config::MacroSettings* ms = currentSettings();
+    if (!ms) return;
+    long long v = static_cast<long long>(ms->maxDelayMs) + deltaMs;
+    v = std::clamp<long long>(v, 0, config::kMaxDelayLimitMs);
+    ms->maxDelayMs = static_cast<uint32_t>(v);
+    persist();
+    invalidate();
+}
+
+void MainWindow::commitEditing() {
+    if (editing_ == Field::Sensitivity) {
+        try {
+            const double v = std::stod(editBuffer_);
+            if (calibration::isValidSensitivity(v)) {
+                app_->settings().sensitivity = std::round(v * 100.0) / 100.0;
+                persist();
+            } else {
+                message_ = L"Sensibilidad válida: entre 0.01 y 20.00.";
+                messageUntil_ = GetTickCount() + 4000;
+            }
+        } catch (...) {
+            message_ = L"Valor de sensibilidad no numérico.";
+            messageUntil_ = GetTickCount() + 4000;
+        }
+    } else if (editing_ == Field::MaxDelay) {
+        config::MacroSettings* ms = currentSettings();
+        if (ms) {
+            try {
+                const long long v = editBuffer_.empty() ? 0 : std::stoll(editBuffer_);
+                ms->maxDelayMs = static_cast<uint32_t>(std::clamp<long long>(v, 0, config::kMaxDelayLimitMs));
+                persist();
+            } catch (...) {
+                message_ = L"Max Delay no numérico.";
+                messageUntil_ = GetTickCount() + 4000;
+            }
+        }
+    }
+    editing_ = Field::None;
+    editBuffer_.clear();
+    invalidate();
+}
+
+void MainWindow::chooseBackground() {
+    wchar_t file[MAX_PATH] = {};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = L"Imágenes (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0Todos los archivos\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = L"Selecciona una imagen de fondo";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+
+    if (!GetOpenFileNameW(&ofn)) return; // cancelled or failed; nothing changes
+
+    std::string error;
+    if (background_.load(file, error)) {
+        app_->settings().backgroundImage = file;
+        message_ = L"Fondo aplicado (" + std::to_wstring(background_.width()) + L"×" +
+                   std::to_wstring(background_.height()) + L").";
+        messageUntil_ = GetTickCount() + 4000;
+        persist();
+    } else {
+        message_ = L"No se pudo cargar: " + platform::utf8ToWide(error);
+        messageUntil_ = GetTickCount() + 6000;
+    }
+    invalidate();
+}
+
+void MainWindow::removeBackground() {
+    background_.clear();
+    app_->settings().backgroundImage.clear();
+    persist();
+    message_ = L"Fondo predeterminado restaurado.";
+    messageUntil_ = GetTickCount() + 3000;
+    invalidate();
+}
+
+void MainWindow::toggleAlwaysOnTop() {
+    const bool next = !app_->settings().alwaysOnTop;
+    app_->settings().alwaysOnTop = next;
+    SetWindowPos(hwnd_, next ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    persist();
+    invalidate();
+}
+
+void MainWindow::toggleGlobalEnabled() {
+    const bool next = !app_->globalEnabled();
+    app_->setGlobalEnabled(next);
+    if (!next) {
+        // DISABLE ALL: engine cancels, releases inputs and refuses new runs.
+        runningMacro_.clear();
+        message_ = L"DISABLE ALL activado: secuencias canceladas y entradas liberadas.";
+    } else {
+        message_ = L"Macros rehabilitadas.";
+    }
+    messageUntil_ = GetTickCount() + 4000;
+    invalidate();
+}
+
+void MainWindow::doReload() {
+    cancelHotkeyCapture();
+    app_->reloadMacros();
+    if (activeTab_ >= app_->macros().size()) activeTab_ = 0;
+    sequenceScroll_ = 0;
+    const size_t errors = app_->loadErrors().size();
+    message_ = L"Macros recargadas: " + std::to_wstring(app_->macros().size()) + L" válidas" +
+               (errors ? (L", " + std::to_wstring(errors) + L" con errores") : L"");
+    messageUntil_ = GetTickCount() + 5000;
+    persist();
+    layout();
+    invalidate();
+}
+
+void MainWindow::persist() {
+    std::string error;
+    if (!app_->saveSettings(error)) {
+        message_ = L"No se pudo guardar la configuración: " + platform::utf8ToWide(error);
+        messageUntil_ = GetTickCount() + 6000;
+    }
+}
+
+void MainWindow::rememberWindowPlacement() {
+    if (!hwnd_ || !app_) return;
+    WINDOWPLACEMENT wp{};
+    wp.length = sizeof(wp);
+    if (!GetWindowPlacement(hwnd_, &wp)) return;
+    config::WindowSettings& ws = app_->settings().window;
+    ws.maximized = (wp.showCmd == SW_SHOWMAXIMIZED);
+    ws.x = wp.rcNormalPosition.left;
+    ws.y = wp.rcNormalPosition.top;
+    ws.width = wp.rcNormalPosition.right - wp.rcNormalPosition.left;
+    ws.height = wp.rcNormalPosition.bottom - wp.rcNormalPosition.top;
+}
+
+} // namespace rms::ui

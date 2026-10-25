@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "id": "solitude_v2",
+  "order": 4,
+  "name": "SOLITUDE V2",
+  "accent": "#F97316",
+  "description": "Uppercut opcional, Q, barrido de 8 x -130 y retorno de +425.",
+  "defaultHotkey": "F6",
+  "defaultEnabled": true,
+  "options": [
+    { "id": "jump_uppercut", "label": "Jump Uppercut", "default": true }
+  ],
+  "actions": [
+    { "type": "if", "option": "jump_uppercut", "actions": [
+      { "type": "keyDown", "key": "Space" },
+      { "type": "mouseDown", "button": "left" },
+      { "type": "waitRandom", "min": 128, "max": 356 },
+      { "type": "mouseUp", "button": "left" },
+      { "type": "keyUp", "key": "Space" },
+      { "type": "keyDown", "key": "W" }
+    ]},
+    { "type": "keyDown", "key": "Q" },
+    { "type": "keyUp", "key": "Q" },
+    { "type": "waitRandom", "min": 128, "max": 205 },
+    { "type": "repeat", "count": 8, "actions": [
+      { "type": "move", "dx": -130 },
+      { "type": "wait", "ms": 12 }
+    ]},
+    { "type": "wait", "ms": 69 },
+    { "type": "move", "dx": 425 },
+    { "type": "wait", "ms": 75 },
+    { "type": "if", "option": "jump_uppercut", "actions": [
+      { "type": "keyUp", "key": "W" }
+    ]}
+  ]
+}

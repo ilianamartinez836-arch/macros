@@ -1,0 +1,100 @@
+#pragma once
+// Sequence executor. One worker thread, one macro at a time, cooperative cancellation
+// through a Win32 event that also interrupts in-progress waits.
+// Waits are scheduled against an absolute QPC timeline (no cumulative drift);
+// 1 ms targets are best-effort, not guaranteed by Windows.
+
+#include "../input/input_controller.h"
+#include "../input/roblox_focus.h"
+#include "macro_definition.h"
+
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <random>
+#include <string>
+#include <thread>
+
+namespace rms::engine {
+
+enum class RunOutcome { Completed, Cancelled, FocusLost, InputError, InternalError };
+
+enum class SubmitResult { Accepted, Busy, Disarmed, NotRunning, InvalidRequest };
+
+struct RunRequest {
+    std::shared_ptr<const MacroDefinition> definition;
+    std::map<std::string, bool> options; // snapshot taken at trigger time
+    uint32_t maxDelayMs = 0;             // 0 = off; caps only waitRandom upper bounds
+    double sensitivity = 0.74;
+};
+
+struct EngineEvent {
+    enum class Kind { Started, Finished } kind = Kind::Started;
+    std::string macroId;
+    RunOutcome outcome = RunOutcome::Completed;
+    std::string detail;
+};
+
+const char* outcomeName(RunOutcome o);
+
+class MacroEngine {
+public:
+    using Listener = std::function<void(const EngineEvent&)>; // called on the worker thread
+
+    explicit MacroEngine(input::InputController& input);
+    ~MacroEngine();
+    MacroEngine(const MacroEngine&) = delete;
+    MacroEngine& operator=(const MacroEngine&) = delete;
+
+    bool start(Listener listener, std::string& error);
+    void shutdown(); // cancels, joins, releases inputs. Idempotent.
+
+    SubmitResult submit(RunRequest request);
+    void cancel();                // cancels the running sequence (if any)
+    void setArmed(bool armed);    // false = DISABLE ALL: cancel + reject new runs
+    bool armed() const { return armed_.load(); }
+    bool busy() const { return busy_.load(); }
+
+    // Effective upper bound for a random wait under a given Max Delay (documented rule).
+    static uint32_t effectiveRandomMax(uint32_t minMs, uint32_t maxMs, uint32_t maxDelayMs);
+
+private:
+    struct Ctx {
+        const RunRequest* req = nullptr;
+        int64_t deadline = 0; // QPC ticks
+        RunOutcome outcome = RunOutcome::Completed;
+        std::string detail;
+    };
+
+    void workerLoop();
+    RunOutcome execute(const RunRequest& req, std::string& detail);
+    bool runList(const std::vector<Action>& actions, Ctx& ctx);
+    bool runAction(const Action& a, Ctx& ctx);
+    bool checkGate(Ctx& ctx);
+    bool waitMs(uint32_t ms, Ctx& ctx);
+    bool waitUntil(int64_t deadline, Ctx& ctx);
+    int64_t now() const;
+    int64_t msToTicks(double ms) const;
+
+    input::InputController& input_;
+    input::RobloxFocusChecker focus_;
+    Listener listener_;
+    std::thread worker_;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::optional<RunRequest> pending_;
+    bool stop_ = false;
+    bool started_ = false;
+    std::atomic<bool> busy_{false};
+    std::atomic<bool> armed_{true};
+    HANDLE cancelEvent_ = nullptr;
+    HANDLE timer_ = nullptr;
+    int64_t qpcFrequency_ = 1;
+    std::mt19937 rng_;
+};
+
+} // namespace rms::engine

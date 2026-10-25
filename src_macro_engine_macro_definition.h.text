@@ -1,0 +1,67 @@
+#pragma once
+// In-memory representation of a validated macro definition (loaded from JSON).
+// Only these action types exist; nothing in a definition can execute code.
+
+#include "../input/input_controller.h"
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace rms::engine {
+
+enum class ActionType {
+    KeyDown,     // key
+    KeyUp,       // key
+    MouseDown,   // button
+    MouseUp,     // button
+    Move,        // dx, dy (base values; scaled right before sending)
+    Wait,        // ms (fixed; never modified by Max Delay)
+    WaitRandom,  // minMs..maxMs inclusive (upper bound capped by Max Delay if set)
+    Repeat,      // count x children
+    If           // children run when option (xor negate) is true at sequence start
+};
+
+struct Action {
+    ActionType type = ActionType::Wait;
+    uint16_t vk = 0;
+    input::MouseButton button = input::MouseButton::Left;
+    int dx = 0;
+    int dy = 0;
+    uint32_t ms = 0;
+    uint32_t minMs = 0;
+    uint32_t maxMs = 0;
+    uint32_t count = 0;
+    std::string option;
+    bool negate = false;
+    std::vector<Action> children;
+};
+
+struct OptionDef {
+    std::string id;
+    std::string label;
+    bool defaultValue = false;
+};
+
+struct MacroDefinition {
+    std::string id;
+    int order = 1000;
+    std::string name;
+    std::string description;
+    uint32_t accentRgb = 0xFFFFFF; // 0xRRGGBB
+    uint16_t defaultHotkeyVk = 0;
+    bool defaultEnabled = true;
+    std::vector<OptionDef> options;
+    std::vector<Action> actions;
+    std::wstring sourceFile;
+    uint64_t expandedActionCount = 0;
+    uint64_t worstCaseDurationMs = 0;
+
+    const OptionDef* findOption(const std::string& optionId) const {
+        for (const auto& o : options)
+            if (o.id == optionId) return &o;
+        return nullptr;
+    }
+};
+
+} // namespace rms::engine

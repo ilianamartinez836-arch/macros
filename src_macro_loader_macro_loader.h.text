@@ -1,0 +1,40 @@
+#pragma once
+// Discovers, parses and validates macro definitions from <exe>/macros/*.json.
+// Invalid files are reported and skipped; they never affect valid ones.
+
+#include "../macro_engine/macro_definition.h"
+
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace rms::loader {
+
+// Hard limits enforced on every definition.
+constexpr size_t kMaxFileBytes = 256 * 1024;
+constexpr size_t kMaxActionsPerList = 512;
+constexpr int kMaxNesting = 4;
+constexpr uint32_t kMaxRepeat = 1000;
+constexpr uint32_t kMaxWaitMs = 10000;
+constexpr int kMaxBaseMove = 2000;
+constexpr uint64_t kMaxExpandedActions = 20000;
+constexpr uint64_t kMaxWorstCaseMs = 60000;
+constexpr size_t kMaxMacros = 64;
+
+struct LoadError {
+    std::wstring file;
+    std::string message;
+};
+
+struct LoadResult {
+    std::vector<std::shared_ptr<const engine::MacroDefinition>> macros; // sorted by order, then name
+    std::vector<LoadError> errors;
+};
+
+LoadResult loadMacroDirectory(const std::filesystem::path& directory);
+
+// Parses one definition from JSON text. Exposed for testing.
+bool parseMacroDefinition(const std::string& text, engine::MacroDefinition& out, std::string& error);
+
+} // namespace rms::loader

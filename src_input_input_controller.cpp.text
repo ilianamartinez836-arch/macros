@@ -1,0 +1,136 @@
+#include "input_controller.h"
+
+#include "../utilities/platform.h"
+
+#include <vector>
+
+namespace rms::input {
+namespace {
+
+bool physicallyDown(int vk) {
+    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+int buttonVk(MouseButton b) {
+    switch (b) {
+    case MouseButton::Left: return VK_LBUTTON;
+    case MouseButton::Right: return VK_RBUTTON;
+    default: return VK_MBUTTON;
+    }
+}
+
+INPUT makeKey(uint16_t vk, bool up) {
+    INPUT in{};
+    in.type = INPUT_KEYBOARD;
+    UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX);
+    if (sc != 0) {
+        // Scancode input: games reading raw input / DirectInput see these reliably.
+        in.ki.wScan = static_cast<WORD>(sc & 0xFF);
+        in.ki.dwFlags = KEYEVENTF_SCANCODE;
+        if ((sc & 0xFF00) == 0xE000 || (sc & 0xFF00) == 0xE100) in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    } else {
+        in.ki.wVk = vk;
+    }
+    if (up) in.ki.dwFlags |= KEYEVENTF_KEYUP;
+    return in;
+}
+
+INPUT makeButton(MouseButton b, bool up) {
+    INPUT in{};
+    in.type = INPUT_MOUSE;
+    switch (b) {
+    case MouseButton::Left: in.mi.dwFlags = up ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN; break;
+    case MouseButton::Right: in.mi.dwFlags = up ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_RIGHTDOWN; break;
+    case MouseButton::Middle: in.mi.dwFlags = up ? MOUSEEVENTF_MIDDLEUP : MOUSEEVENTF_MIDDLEDOWN; break;
+    }
+    return in;
+}
+
+bool send(INPUT* in, UINT n) {
+    return SendInput(n, in, sizeof(INPUT)) == n;
+}
+
+} // namespace
+
+bool InputController::keyDown(uint16_t vk) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (ownedKeys_.count(vk)) return true;
+    if (physicallyDown(vk)) {
+        // The user is already holding it: do not press and never release it for them.
+        userHeldKeys_.insert(vk);
+        return true;
+    }
+    INPUT in = makeKey(vk, false);
+    if (!send(&in, 1)) return false;
+    ownedKeys_.insert(vk);
+    return true;
+}
+
+bool InputController::keyUp(uint16_t vk) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (userHeldKeys_.erase(vk)) return true; // not ours to release
+    if (!ownedKeys_.count(vk)) return true;   // nothing held by us
+    INPUT in = makeKey(vk, true);
+    bool ok = send(&in, 1);
+    ownedKeys_.erase(vk); // forget it either way; releaseAll would only retry the same call
+    return ok;
+}
+
+bool InputController::mouseDown(MouseButton b) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (ownedButtons_.count(b)) return true;
+    if (physicallyDown(buttonVk(b))) {
+        userHeldButtons_.insert(b);
+        return true;
+    }
+    INPUT in = makeButton(b, false);
+    if (!send(&in, 1)) return false;
+    ownedButtons_.insert(b);
+    return true;
+}
+
+bool InputController::mouseUp(MouseButton b) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (userHeldButtons_.erase(b)) return true;
+    if (!ownedButtons_.count(b)) return true;
+    INPUT in = makeButton(b, true);
+    bool ok = send(&in, 1);
+    ownedButtons_.erase(b);
+    return ok;
+}
+
+bool InputController::moveRelative(int dx, int dy) {
+    if (dx == 0 && dy == 0) return true;
+    INPUT in{};
+    in.type = INPUT_MOUSE;
+    in.mi.dx = dx;
+    in.mi.dy = dy;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE; // relative; subject to Windows pointer settings
+    return send(&in, 1);
+}
+
+void InputController::releaseAll() noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<INPUT> batch;
+        batch.reserve(ownedKeys_.size() + ownedButtons_.size());
+        for (MouseButton b : ownedButtons_) batch.push_back(makeButton(b, true));
+        for (uint16_t vk : ownedKeys_) batch.push_back(makeKey(vk, true));
+        if (!batch.empty()) send(batch.data(), static_cast<UINT>(batch.size()));
+        ownedKeys_.clear();
+        ownedButtons_.clear();
+        userHeldKeys_.clear();
+        userHeldButtons_.clear();
+    } catch (...) {
+        // Allocation failure: fall back to individual releases without containers.
+        for (uint16_t vk : ownedKeys_) { INPUT in = makeKey(vk, true); send(&in, 1); }
+        for (MouseButton b : ownedButtons_) { INPUT in = makeButton(b, true); send(&in, 1); }
+    }
+}
+
+bool InputController::hasHeldInputs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !ownedKeys_.empty() || !ownedButtons_.empty();
+}
+
+} // namespace rms::input

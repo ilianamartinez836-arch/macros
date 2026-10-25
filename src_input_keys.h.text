@@ -1,0 +1,23 @@
+#pragma once
+// Stable, human-readable key names <-> Windows virtual-key codes.
+// The same names are used in macro definitions ("key") and in settings ("hotkey").
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace rms::keys {
+
+// Case-insensitive. Returns 0 when the name is unknown.
+uint16_t vkFromName(const std::string& name);
+
+// Canonical name, or empty string when the code has no supported name.
+std::string nameFromVk(uint16_t vk);
+
+// True when the key can be used as a trigger hotkey (excludes modifiers and mouse buttons).
+bool isValidHotkeyVk(uint16_t vk);
+
+// All supported names in canonical form (for documentation / UI).
+std::vector<std::string> allKeyNames();
+
+} // namespace rms::keys

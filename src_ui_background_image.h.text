@@ -1,0 +1,38 @@
+#pragma once
+// Loads a PNG / JPG / JPEG via WIC (ships with Windows) into a 32-bpp DIB and
+// paints it "cover" style: fills the window, keeps aspect ratio, crops the excess.
+
+#include "../utilities/platform.h"
+
+#include <string>
+
+namespace rms::ui {
+
+class BackgroundImage {
+public:
+    BackgroundImage() = default;
+    ~BackgroundImage();
+    BackgroundImage(const BackgroundImage&) = delete;
+    BackgroundImage& operator=(const BackgroundImage&) = delete;
+
+    // Returns false and fills `error` (Spanish) when the file is missing or unsupported.
+    // On failure the previous image is cleared, so callers fall back to the flat background.
+    bool load(const std::wstring& path, std::string& error);
+    void clear();
+
+    bool valid() const { return bitmap_ != nullptr; }
+    const std::wstring& path() const { return path_; }
+    int width() const { return width_; }
+    int height() const { return height_; }
+
+    // Paints into `dest`. Returns false when there is no image to paint.
+    bool draw(HDC dc, const RECT& dest) const;
+
+private:
+    HBITMAP bitmap_ = nullptr;
+    int width_ = 0;
+    int height_ = 0;
+    std::wstring path_;
+};
+
+} // namespace rms::ui

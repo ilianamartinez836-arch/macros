@@ -1,0 +1,123 @@
+// Roblox Macro Suite — entry point.
+// Responsibilities: COM/DPI init, single-instance guard, application + window
+// bring-up, message loop, and an ordered shutdown that always releases inputs.
+
+#include "app/application.h"
+#include "ui/main_window.h"
+#include "utilities/platform.h"
+
+#include <objbase.h>
+
+#include <string>
+
+namespace {
+
+const wchar_t* kMutexName = L"Local\\RobloxMacroSuite.SingleInstance";
+
+void showError(const std::wstring& text) {
+    MessageBoxW(nullptr, text.c_str(), L"Roblox Macro Suite", MB_ICONERROR | MB_OK);
+}
+
+bool isElevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD size = sizeof(elevation);
+    const bool ok = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) != FALSE;
+    CloseHandle(token);
+    return ok && elevation.TokenIsElevated != 0;
+}
+
+} // namespace
+
+int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ LPWSTR, _In_ int) {
+    // Single instance: two copies would fight over the same hotkeys and settings file.
+    HANDLE mutex = CreateMutexW(nullptr, TRUE, kMutexName);
+    if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND existing = FindWindowW(L"RobloxMacroSuiteWindow", nullptr);
+        if (existing) {
+            ShowWindow(existing, SW_RESTORE);
+            SetForegroundWindow(existing);
+        } else {
+            showError(L"Roblox Macro Suite ya se está ejecutando.");
+        }
+        CloseHandle(mutex);
+        return 0;
+    }
+
+    // Per-monitor DPI v2 is declared in the manifest; this is a defensive fallback
+    // for the case where the manifest is not applied (e.g. a custom build).
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(comResult)) {
+        showError(L"No se pudo inicializar COM; la carga de imágenes de fondo no estará disponible.");
+        // Not fatal: the app still runs with the flat background.
+    }
+
+    if (!isElevated()) {
+        // The manifest requests elevation; if we got here without it, Windows either
+        // denied it or the manifest was stripped. SendInput cannot reach an elevated
+        // Roblox window in that case, so warn clearly instead of failing silently.
+        MessageBoxW(nullptr,
+                    L"La aplicación no se está ejecutando como administrador.\n\n"
+                    L"Si Roblox se ejecuta con privilegios más altos, Windows bloqueará "
+                    L"el envío de teclas y movimientos (UIPI) y las macros no tendrán efecto.\n\n"
+                    L"Cierra la aplicación y ejecútala con «Ejecutar como administrador» "
+                    L"si observas ese comportamiento.",
+                    L"Roblox Macro Suite", MB_ICONWARNING | MB_OK);
+    }
+
+    int exitCode = 0;
+    {
+        std::wstring error;
+        if (!rms::ui::MainWindow::registerClass(instance, error)) {
+            showError(error);
+            if (SUCCEEDED(comResult)) CoUninitialize();
+            if (mutex) CloseHandle(mutex);
+            return 1;
+        }
+
+        rms::app::Application application;
+        rms::ui::MainWindow window;
+
+        // The window must exist before the application, because hotkeys and engine
+        // events are bound to its handle. We create it first with a null app only if
+        // needed; here create() receives the app and initialize() runs right after.
+        if (!window.create(instance, application, error)) {
+            showError(error);
+            if (SUCCEEDED(comResult)) CoUninitialize();
+            if (mutex) CloseHandle(mutex);
+            return 1;
+        }
+
+        std::string initError;
+        if (!application.initialize(window.handle(), initError)) {
+            showError(L"No se pudo iniciar el motor de macros: " +
+                      rms::platform::utf8ToWide(initError));
+            DestroyWindow(window.handle());
+            if (SUCCEEDED(comResult)) CoUninitialize();
+            if (mutex) CloseHandle(mutex);
+            return 1;
+        }
+
+        // The window read settings during create(); refresh its view now that the
+        // application has loaded definitions and reconciled the configuration.
+        InvalidateRect(window.handle(), nullptr, FALSE);
+
+        MSG msg;
+        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        exitCode = static_cast<int>(msg.wParam);
+
+        // Ordered shutdown: cancels any sequence, joins the worker thread,
+        // releases every input the program is holding and saves settings.
+        application.shutdown();
+    }
+
+    if (SUCCEEDED(comResult)) CoUninitialize();
+    if (mutex) CloseHandle(mutex);
+    return exitCode;
+}

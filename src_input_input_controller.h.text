@@ -1,0 +1,36 @@
+#pragma once
+// Sends keyboard/mouse input via SendInput and tracks exactly which inputs
+// THIS program is holding, so they can be released safely on cancel/exit
+// without touching keys the user was already holding.
+
+#include <cstdint>
+#include <mutex>
+#include <set>
+
+namespace rms::input {
+
+enum class MouseButton : uint8_t { Left, Right, Middle };
+
+class InputController {
+public:
+    // Each returns false only when SendInput itself fails (e.g. UIPI block).
+    bool keyDown(uint16_t vk);
+    bool keyUp(uint16_t vk);
+    bool mouseDown(MouseButton b);
+    bool mouseUp(MouseButton b);
+    bool moveRelative(int dx, int dy);
+
+    // Releases every key/button pressed by this program and still held. Never throws.
+    void releaseAll() noexcept;
+
+    bool hasHeldInputs() const;
+
+private:
+    mutable std::mutex mutex_;
+    std::set<uint16_t> ownedKeys_;        // pressed by us, still down
+    std::set<uint16_t> userHeldKeys_;     // were already down when a keyDown was requested
+    std::set<MouseButton> ownedButtons_;
+    std::set<MouseButton> userHeldButtons_;
+};
+
+} // namespace rms::input

@@ -1,0 +1,47 @@
+#pragma once
+// Minimal, strict JSON (RFC 8259) parser and serializer. No external dependencies.
+
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace rms::json {
+
+struct Value {
+    enum class Type { Null, Bool, Number, String, Array, Object };
+
+    Type type = Type::Null;
+    bool boolean = false;
+    double number = 0.0;
+    std::string string;
+    std::vector<Value> array;
+    std::vector<std::pair<std::string, Value>> object; // preserves insertion order
+
+    static Value makeBool(bool v);
+    static Value makeNumber(double v);
+    static Value makeString(std::string v);
+    static Value makeArray();
+    static Value makeObject();
+
+    bool isNull() const { return type == Type::Null; }
+    bool isBool() const { return type == Type::Bool; }
+    bool isNumber() const { return type == Type::Number; }
+    bool isString() const { return type == Type::String; }
+    bool isArray() const { return type == Type::Array; }
+    bool isObject() const { return type == Type::Object; }
+
+    // Object helpers. find() returns nullptr when absent or when this is not an object.
+    const Value* find(const std::string& key) const;
+    Value* find(const std::string& key);
+    void set(const std::string& key, Value v); // converts to object if needed
+    void push(Value v);                        // converts to array if needed
+};
+
+// Returns false and fills `error` (Spanish, with byte position) on failure.
+bool parse(const std::string& text, Value& out, std::string& error);
+
+// Pretty-prints with `indent` spaces (0 = compact).
+std::string serialize(const Value& v, int indent = 2);
+
+} // namespace rms::json
